@@ -20,9 +20,14 @@ export function Sidebar() {
         <div className="w-10 h-10 rounded-xl bg-[#F9BB00] flex items-center justify-center shadow-lg shadow-[#F9BB00]/20">
           <Activity className="w-6 h-6 text-[#004175]" />
         </div>
-        <h1 className="font-display font-bold text-2xl hidden lg:block tracking-wide">
-          VoiceSys<span className="text-[#F9BB00]">.</span>
-        </h1>
+        <div className="hidden lg:block">
+          <h1 className="font-display font-bold text-2xl tracking-wide leading-none">
+            SIMANTU<span className="text-[#F9BB00]">.</span>
+          </h1>
+          <p className="text-[10px] font-medium text-white/50 uppercase tracking-tighter mt-1">
+            Univ. Gadjah Mada
+          </p>
+        </div>
       </div>
 
       <nav className="flex-1 w-full flex flex-col gap-2 px-3 lg:px-4">
