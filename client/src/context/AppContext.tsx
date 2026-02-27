@@ -1,50 +1,40 @@
-import React, { createContext, useContext, useState, ReactNode } from "react";
+import { createContext, useContext, useState, ReactNode } from "react";
 
 interface AppContextType {
-  text: string;
-  setText: (text: string) => void;
+  textId: string;
+  setTextId: (text: string) => void;
+  textEn: string;
+  setTextEn: (text: string) => void;
   voice: string;
   setVoice: (voice: string) => void;
   isLangDetected: boolean;
-  setIsLangDetected: (val: boolean) => void;
+  setIsLangDetected: (detected: boolean) => void;
   isPlaying: boolean;
   playAudio: () => void;
-  stopAudio: () => void;
 }
 
-const AppContext = createContext<AppContextType | null>(null);
+const AppContext = createContext<AppContextType | undefined>(undefined);
 
 export function AppProvider({ children }: { children: ReactNode }) {
-  const [text, setText] = useState("");
+  const [textId, setTextId] = useState("");
+  const [textEn, setTextEn] = useState("");
   const [voice, setVoice] = useState("Nova - Friendly");
   const [isLangDetected, setIsLangDetected] = useState(true);
   const [isPlaying, setIsPlaying] = useState(false);
 
   const playAudio = () => {
-    if (!text.trim()) return;
     setIsPlaying(true);
-    // Mock audio playing duration (e.g., 3 seconds)
-    setTimeout(() => {
-      setIsPlaying(false);
-    }, 3000);
-  };
-
-  const stopAudio = () => {
-    setIsPlaying(false);
+    setTimeout(() => setIsPlaying(false), 5000); // Simulate audio playing for 5 seconds
   };
 
   return (
-    <AppContext.Provider
-      value={{
-        text,
-        setText,
-        voice,
-        setVoice,
-        isLangDetected,
-        setIsLangDetected,
-        isPlaying,
-        playAudio,
-        stopAudio,
+    <AppContext.Provider 
+      value={{ 
+        textId, setTextId, 
+        textEn, setTextEn, 
+        voice, setVoice, 
+        isLangDetected, setIsLangDetected, 
+        isPlaying, playAudio 
       }}
     >
       {children}
@@ -54,7 +44,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
 export function useAppContext() {
   const context = useContext(AppContext);
-  if (!context) {
+  if (context === undefined) {
     throw new Error("useAppContext must be used within an AppProvider");
   }
   return context;

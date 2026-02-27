@@ -5,7 +5,13 @@ import { useCreateAnnouncement } from "@/hooks/use-announcements";
 import { motion, AnimatePresence } from "framer-motion";
 
 export function InputArea() {
-  const { text, setText, voice, setVoice, isLangDetected, setIsLangDetected, isPlaying, playAudio } = useAppContext();
+  const { 
+    textId, setTextId, 
+    textEn, setTextEn, 
+    voice, setVoice, 
+    isLangDetected, setIsLangDetected, 
+    isPlaying, playAudio 
+  } = useAppContext();
   const [isSaveModalOpen, setIsSaveModalOpen] = useState(false);
   const [saveTitle, setSaveTitle] = useState("");
   
@@ -13,12 +19,12 @@ export function InputArea() {
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!saveTitle.trim() || !text.trim()) return;
+    if (!saveTitle.trim() || (!textId.trim() && !textEn.trim())) return;
     
     await createAnnouncement.mutateAsync({
       title: saveTitle,
-      contentId: text, // Simulating detection, saving same text
-      contentEn: text,
+      contentId: textId,
+      contentEn: textEn,
       voice: voice,
       isFavorite: false,
     });
@@ -44,24 +50,37 @@ export function InputArea() {
               ${isLangDetected ? 'bg-[#004175] text-white' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}
           >
             <Languages className="w-4 h-4" />
-            Auto-Detect ID/EN
+            Detection Active
           </button>
         </div>
 
-        <div className="relative group">
-          <textarea
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            placeholder="Enter your announcement text here..."
-            className="w-full h-40 p-5 bg-gray-50 border border-gray-200 rounded-xl resize-none text-gray-800 text-lg 
-                       focus:outline-none focus:ring-4 focus:ring-[#004175]/10 focus:border-[#004175]/30 
-                       transition-all duration-300"
-          />
-          {isLangDetected && text && (
-             <div className="absolute top-4 right-4 bg-green-100 text-green-700 px-2 py-1 rounded text-xs font-bold uppercase">
-               Detected: {text.length % 2 === 0 ? 'EN' : 'ID'}
-             </div>
-          )}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="relative group">
+            <div className="absolute top-3 left-3 bg-[#004175]/10 text-[#004175] px-2 py-0.5 rounded text-[10px] font-bold uppercase z-10">
+              Indonesian
+            </div>
+            <textarea
+              value={textId}
+              onChange={(e) => setTextId(e.target.value)}
+              placeholder="Masukkan teks pengumuman bahasa Indonesia..."
+              className="w-full h-40 p-5 pt-10 bg-gray-50 border border-gray-200 rounded-xl resize-none text-gray-800 text-base 
+                         focus:outline-none focus:ring-4 focus:ring-[#004175]/10 focus:border-[#004175]/30 
+                         transition-all duration-300"
+            />
+          </div>
+          <div className="relative group">
+            <div className="absolute top-3 left-3 bg-[#004175]/10 text-[#004175] px-2 py-0.5 rounded text-[10px] font-bold uppercase z-10">
+              English
+            </div>
+            <textarea
+              value={textEn}
+              onChange={(e) => setTextEn(e.target.value)}
+              placeholder="Enter English announcement text here..."
+              className="w-full h-40 p-5 pt-10 bg-gray-50 border border-gray-200 rounded-xl resize-none text-gray-800 text-base 
+                         focus:outline-none focus:ring-4 focus:ring-[#004175]/10 focus:border-[#004175]/30 
+                         transition-all duration-300"
+            />
+          </div>
         </div>
 
         <div className="flex flex-col sm:flex-row items-center justify-between mt-6 pt-6 border-t border-gray-100 gap-4">
@@ -81,7 +100,7 @@ export function InputArea() {
           <div className="flex items-center gap-3 w-full sm:w-auto">
             <button
               onClick={() => setIsSaveModalOpen(true)}
-              disabled={!text.trim()}
+              disabled={!textId.trim() && !textEn.trim()}
               className="flex-1 sm:flex-none flex items-center justify-center gap-2 px-6 py-3 rounded-xl font-semibold bg-[#F9BB00]/10 text-[#bd8e00] hover:bg-[#F9BB00]/20 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
               <Bookmark className="w-5 h-5" />
@@ -89,7 +108,7 @@ export function InputArea() {
             </button>
             <button
               onClick={playAudio}
-              disabled={!text.trim() || isPlaying}
+              disabled={(!textId.trim() && !textEn.trim()) || isPlaying}
               className="flex-1 sm:flex-none flex items-center justify-center gap-2 px-8 py-3 rounded-xl font-semibold bg-gradient-to-r from-[#004175] to-[#002a4d] text-white shadow-lg shadow-[#004175]/30 hover:shadow-xl hover:-translate-y-0.5 active:translate-y-0 disabled:opacity-50 disabled:transform-none disabled:cursor-not-allowed transition-all duration-300"
             >
               {isPlaying ? <Loader2 className="w-5 h-5 animate-spin" /> : <Play className="w-5 h-5 fill-current" />}

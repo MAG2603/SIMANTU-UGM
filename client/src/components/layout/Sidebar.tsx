@@ -1,15 +1,17 @@
 import { LayoutDashboard, Library as LibraryIcon, Calendar, Settings, Activity } from "lucide-react";
 import { useApiStatus } from "@/hooks/use-status";
+import { useLocation, Link } from "wouter";
 
 export function Sidebar() {
   const { data: status } = useApiStatus();
   const isConnected = status?.connected ?? false;
+  const [location] = useLocation();
 
   const navItems = [
-    { icon: LayoutDashboard, label: "Dashboard", active: true },
-    { icon: LibraryIcon, label: "Library" },
-    { icon: Calendar, label: "Scheduler" },
-    { icon: Settings, label: "Settings" },
+    { icon: LayoutDashboard, label: "Dashboard", path: "/" },
+    { icon: LibraryIcon, label: "Library", path: "/library" },
+    { icon: Calendar, label: "Scheduler", path: "/scheduler" },
+    { icon: Settings, label: "Settings", path: "/settings" },
   ];
 
   return (
@@ -26,22 +28,24 @@ export function Sidebar() {
       <nav className="flex-1 w-full flex flex-col gap-2 px-3 lg:px-4">
         {navItems.map((item, idx) => {
           const Icon = item.icon;
+          const isActive = location === item.path;
           return (
-            <button
-              key={idx}
-              className={`
-                flex items-center gap-4 w-full p-3 lg:px-4 lg:py-3 rounded-xl transition-all duration-200 group relative
-                ${item.active 
-                  ? 'bg-white/10 text-white' 
-                  : 'text-white/60 hover:text-white hover:bg-white/5'}
-              `}
-            >
-              {item.active && (
-                <div className="absolute left-0 top-1/2 -translate-y-1/2 w-1.5 h-8 bg-[#F9BB00] rounded-r-full shadow-[0_0_10px_rgba(249,187,0,0.5)]" />
-              )}
-              <Icon className={`w-6 h-6 shrink-0 transition-transform duration-200 ${item.active ? 'scale-110 text-[#F9BB00]' : 'group-hover:scale-110'}`} />
-              <span className="font-medium text-sm hidden lg:block">{item.label}</span>
-            </button>
+            <Link key={idx} href={item.path}>
+              <a
+                className={`
+                  flex items-center gap-4 w-full p-3 lg:px-4 lg:py-3 rounded-xl transition-all duration-200 group relative
+                  ${isActive 
+                    ? 'bg-white/10 text-white' 
+                    : 'text-white/60 hover:text-white hover:bg-white/5'}
+                `}
+              >
+                {isActive && (
+                  <div className="absolute left-0 top-1/2 -translate-y-1/2 w-1.5 h-8 bg-[#F9BB00] rounded-r-full shadow-[0_0_10px_rgba(249,187,0,0.5)]" />
+                )}
+                <Icon className={`w-6 h-6 shrink-0 transition-transform duration-200 ${isActive ? 'scale-110 text-[#F9BB00]' : 'group-hover:scale-110'}`} />
+                <span className="font-medium text-sm hidden lg:block">{item.label}</span>
+              </a>
+            </Link>
           );
         })}
       </nav>

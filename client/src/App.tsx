@@ -6,11 +6,15 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { AppProvider } from "@/context/AppContext";
 import NotFound from "@/pages/not-found";
 import Dashboard from "@/pages/Dashboard";
+import LibraryPage, { SchedulerPage, SettingsPage } from "@/pages/SecondaryPages";
 
 function Router() {
   return (
     <Switch>
       <Route path="/" component={Dashboard}/>
+      <Route path="/library" component={LibraryPage}/>
+      <Route path="/scheduler" component={SchedulerPage}/>
+      <Route path="/settings" component={SettingsPage}/>
       <Route component={NotFound} />
     </Switch>
   );

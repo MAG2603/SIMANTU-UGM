@@ -9,15 +9,15 @@ export function WaveformMonitor() {
 
   return (
     <div className={`h-20 w-full shrink-0 transition-all duration-500 flex items-center justify-between px-8 border-t border-white/10
-      ${isPlaying ? 'bg-[#004175]' : 'bg-[#004175] opacity-90'}`}
+      ${isPlaying ? 'bg-[#004175]' : 'bg-[#F9BB00]'}`}
     >
       <div className="flex items-center gap-4 w-48">
-        <div className={`p-2 rounded-full ${isPlaying ? 'bg-[#F9BB00]/20 text-[#F9BB00]' : 'bg-white/5 text-white/50'}`}>
+        <div className={`p-2 rounded-full ${isPlaying ? 'bg-[#F9BB00]/20 text-[#F9BB00]' : 'bg-[#004175]/20 text-[#004175]'}`}>
           <Activity className={`w-5 h-5 ${isPlaying ? 'animate-pulse' : ''}`} />
         </div>
         <div>
-          <p className="text-xs font-semibold text-white uppercase tracking-wider">Status</p>
-          <p className={`text-sm font-bold ${isPlaying ? 'text-[#F9BB00]' : 'text-white/50'}`}>
+          <p className={`text-xs font-semibold uppercase tracking-wider ${isPlaying ? 'text-white' : 'text-[#004175]'}`}>Status</p>
+          <p className={`text-sm font-bold ${isPlaying ? 'text-[#F9BB00]' : 'text-[#004175]'}`}>
             {isPlaying ? 'BROADCASTING...' : 'STANDBY'}
           </p>
         </div>
@@ -33,8 +33,8 @@ export function WaveformMonitor() {
             <div 
               key={i} 
               className={`w-1.5 rounded-full transition-all duration-300 wave-bar ${delayClass}
-                ${isPlaying ? 'h-full' : 'h-[20%] opacity-20 !animation-none'}
-                ${isHighlight ? 'bg-[#F9BB00]' : 'bg-white/80'}
+                ${isPlaying ? 'h-full bg-white/80' : 'h-[20%] bg-[#004175]/30 !animation-none'}
+                ${isHighlight && isPlaying ? '!bg-[#F9BB00]' : ''}
               `}
               style={{
                 animationPlayState: isPlaying ? 'running' : 'paused'
