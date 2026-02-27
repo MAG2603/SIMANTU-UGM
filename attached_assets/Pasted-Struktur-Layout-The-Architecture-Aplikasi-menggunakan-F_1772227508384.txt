@@ -1,0 +1,46 @@
+Struktur Layout (The Architecture)
+Aplikasi menggunakan Fixed-Frame Layout (tidak ada scrolling pada seluruh halaman, hanya pada area konten tertentu). Frame luar memiliki border halus dengan sudut rounded 8px untuk memberikan kesan aplikasi modern.
+
+Sidebar Kiri (The Navigator): Berwarna Biru Tua UGM (#004175) yang solid. Berisi ikon-ikon minimalis (Dashboard, Library, Scheduler, Settings). Di bagian bawah sidebar, terdapat indikator status koneksi API (hijau jika aktif) untuk memastikan AI siap digunakan.
+
+Main Content (The Workspace): Berlatar belakang putih bersih atau very light grey agar mata tidak lelah.
+
+Right Panel (The Quick Access): Panel khusus untuk memantau "Upcoming Announcements" (Pengumuman yang akan datang).
+
+2. Area Input Bilingual (The Engine)
+Terletak di bagian atas area kerja utama. Bukan sekadar kotak teks biasa, tapi sebuah Focus Card:
+
+Smart Editor: Input teks tunggal yang luas dengan font monospaced atau sans-serif modern (seperti Inter atau Roboto).
+
+Bilingual Toggle: Di sudut kanan atas input, terdapat indikator kecil "ID/EN Detection".
+
+Action Bar: Di bawah kotak teks, terdapat deretan tombol elegan:
+
+Tombol "Play Now": Berwarna Biru Tua UGM dengan ikon Play.
+
+Tombol "Save to Library": Ikon Bookmark berwarna Kuning UGM (#F9BB00).
+
+Voice Selector: Dropdown kecil untuk memilih karakter suara (misal: "Nova - Friendly" atau "Shimmer - Formal").
+
+3. Library & Preset Management (The Storage)
+Di bawah area input, terdapat bagian "Saved Announcements" yang disusun dalam bentuk Grid Card:
+
+Setiap kartu menampilkan cuplikan teks (ID & EN).
+
+Desain kartu menggunakan hover effect; saat mouse mendekat, kartu sedikit terangkat (shadow) dan muncul tombol cepat "Load" atau "Delete".
+
+Gunakan warna aksen Kuning UGM yang sangat tipis sebagai background kartu untuk menandai pengumuman yang paling sering diputar (favorit).
+
+4. Daily Scheduler (The Automation)
+Bagian ini didesain menyerupai Timeline View atau daftar antrean (Queue):
+
+Time Slots: Setiap baris jadwal menampilkan jam (misal: 16:00), judul pengumuman, dan status (Waiting/Done).
+
+Visual Indicator: Pengumuman yang akan segera diputar (misal 5 menit lagi) akan memiliki glow kuning lembut di sekeliling barisnya untuk memberi peringatan visual kepada pustakawan.
+
+Automation Switch: Sebuah sakelar toggle besar di pojok kanan atas berlabel "Auto-Pilot Mode" untuk mengaktifkan atau menonaktifkan penjadwalan otomatis.
+
+5. Elemen Visual & Feedback
+Waveform Monitor: Di bagian paling bawah aplikasi (status bar), terdapat visualisasi gelombang suara yang bergerak halus (warna kuning dan putih di atas latar biru) saat audio sedang diputar. Ini memberikan kesan "High-Tech" pada produk magangmu.
+
+Typography: Menggunakan hierarki yang tegas. Judul menggunakan Bold, teks isi menggunakan Regular, dan keterangan waktu menggunakan Italic kecil yang elegan.
