@@ -7,6 +7,8 @@ import { AppProvider } from "@/context/AppContext";
 import NotFound from "@/pages/not-found";
 import Dashboard from "@/pages/Dashboard";
 import LibraryPage, { SchedulerPage, SettingsPage } from "@/pages/SecondaryPages";
+import { OpeningAnimation } from "@/components/ui/OpeningAnimation";
+import { useState, useEffect } from "react";
 
 function Router() {
   return (
@@ -21,10 +23,28 @@ function Router() {
 }
 
 function App() {
+  const [showOpening, setShowOpening] = useState(true);
+
+  // Use session storage to only show opening once per session
+  useEffect(() => {
+    const hasSeen = sessionStorage.getItem("simantu_opening_seen");
+    if (hasSeen) {
+      setShowOpening(false);
+    }
+  }, []);
+
+  const handleComplete = () => {
+    setShowOpening(false);
+    sessionStorage.setItem("simantu_opening_seen", "true");
+  };
+
   return (
     <QueryClientProvider client={queryClient}>
       <AppProvider>
         <TooltipProvider>
+          <AnimatePresence>
+            {showOpening && <OpeningAnimation onComplete={handleComplete} />}
+          </AnimatePresence>
           <Toaster />
           <Router />
         </TooltipProvider>
