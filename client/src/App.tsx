@@ -9,6 +9,7 @@ import Dashboard from "@/pages/Dashboard";
 import LibraryPage, { SchedulerPage, SettingsPage } from "@/pages/SecondaryPages";
 import { OpeningAnimation } from "@/components/ui/OpeningAnimation";
 import { useState, useEffect } from "react";
+import { AnimatePresence } from "framer-motion";
 
 function Router() {
   return (

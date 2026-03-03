@@ -36,7 +36,7 @@ export function Sidebar() {
           const isActive = location === item.path;
           return (
             <Link key={idx} href={item.path}>
-              <a
+              <button
                 className={`
                   flex items-center gap-4 w-full p-3 lg:px-4 lg:py-3 rounded-xl transition-all duration-200 group relative
                   ${isActive 
@@ -49,7 +49,7 @@ export function Sidebar() {
                 )}
                 <Icon className={`w-6 h-6 shrink-0 transition-transform duration-200 ${isActive ? 'scale-110 text-[#F9BB00]' : 'group-hover:scale-110'}`} />
                 <span className="font-medium text-sm hidden lg:block">{item.label}</span>
-              </a>
+              </button>
             </Link>
           );
         })}
