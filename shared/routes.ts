@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { insertAnnouncementSchema, insertScheduleSchema, announcements, schedules } from "./schema";
+import { insertAnnouncementSchema, insertScheduleSchema, announcementSchema, scheduleSchema } from "./schema";
 
 export const errorSchemas = {
   validation: z.object({ message: z.string(), field: z.string().optional() }),
@@ -12,7 +12,7 @@ export const api = {
       method: "GET" as const,
       path: "/api/announcements" as const,
       responses: {
-        200: z.array(z.custom<typeof announcements.$inferSelect>()),
+        200: z.array(announcementSchema),
       },
     },
     create: {
@@ -20,7 +20,7 @@ export const api = {
       path: "/api/announcements" as const,
       input: insertAnnouncementSchema,
       responses: {
-        201: z.custom<typeof announcements.$inferSelect>(),
+        201: announcementSchema,
         400: errorSchemas.validation,
       },
     },
@@ -29,7 +29,7 @@ export const api = {
       path: "/api/announcements/:id" as const,
       input: insertAnnouncementSchema.partial(),
       responses: {
-        200: z.custom<typeof announcements.$inferSelect>(),
+        200: announcementSchema,
         400: errorSchemas.validation,
         404: errorSchemas.notFound,
       },
@@ -48,7 +48,7 @@ export const api = {
       method: "GET" as const,
       path: "/api/schedules" as const,
       responses: {
-        200: z.array(z.custom<typeof schedules.$inferSelect>()),
+        200: z.array(scheduleSchema),
       },
     },
     create: {
@@ -56,7 +56,7 @@ export const api = {
       path: "/api/schedules" as const,
       input: insertScheduleSchema,
       responses: {
-        201: z.custom<typeof schedules.$inferSelect>(),
+        201: scheduleSchema,
         400: errorSchemas.validation,
       },
     },
@@ -65,9 +65,18 @@ export const api = {
       path: "/api/schedules/:id" as const,
       input: insertScheduleSchema.partial(),
       responses: {
-        200: z.custom<typeof schedules.$inferSelect>(),
+        200: scheduleSchema,
         400: errorSchemas.validation,
         404: errorSchemas.notFound,
+      },
+    },
+    claim: {
+      method: "POST" as const,
+      path: "/api/schedules/:id/claim" as const,
+      responses: {
+        200: scheduleSchema,
+        404: errorSchemas.notFound,
+        409: z.object({ message: z.string() }),
       },
     },
     delete: {
@@ -77,6 +86,16 @@ export const api = {
         204: z.void(),
         404: errorSchemas.notFound,
       },
+    },
+  },
+  tts: {
+    synthesize: {
+      method: "POST" as const,
+      path: "/api/tts" as const,
+    },
+    voices: {
+      method: "GET" as const,
+      path: "/api/tts/voices" as const,
     },
   },
   status: {

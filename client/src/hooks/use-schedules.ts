@@ -47,6 +47,28 @@ export function useCreateSchedule() {
   });
 }
 
+export function useUpdateSchedule() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({ id, ...updates }: { id: number } & Partial<InsertSchedule>) => {
+      const url = buildUrl(api.schedules.update.path, { id });
+      const res = await fetch(url, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(updates),
+        credentials: "include",
+      });
+      if (!res.ok) throw new Error("Failed to update schedule");
+      const data = await res.json();
+      return api.schedules.update.responses[200].extend({ playTime: z.coerce.date() }).parse(data);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: [api.schedules.list.path] });
+    },
+  });
+}
+
 export function useDeleteSchedule() {
   const queryClient = useQueryClient();
   

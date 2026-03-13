@@ -5,20 +5,25 @@ import { useCreateSchedule } from "@/hooks/use-schedules";
 import { useAppContext } from "@/context/AppContext";
 import { format, addHours, roundToNearestMinutes } from "date-fns";
 import { motion, AnimatePresence } from "framer-motion";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 
 export function Library() {
   const { data: announcements = [], isLoading } = useAnnouncements();
   const updateAnnouncement = useUpdateAnnouncement();
   const deleteAnnouncement = useDeleteAnnouncement();
   const createSchedule = useCreateSchedule();
-  const { setText, setVoice } = useAppContext();
+  const { setTextId, setTextEn, setVoice, setVoiceEn } = useAppContext();
 
   const [scheduleModalId, setScheduleModalId] = useState<number | null>(null);
   const [scheduleTime, setScheduleTime] = useState("");
+  const [deleteAnnId, setDeleteAnnId] = useState<number | null>(null);
 
   const handleLoad = (ann: any) => {
-    setText(ann.contentEn);
-    setVoice(ann.voice);
+    setTextId(ann.contentId);
+    setTextEn(ann.contentEn);
+    const voiceParts = (ann.voice || "Pria").split("/");
+    setVoice(voiceParts[0]);
+    setVoiceEn(voiceParts[1] || voiceParts[0]);
   };
 
   const toggleFavorite = (ann: any) => {
@@ -40,8 +45,9 @@ export function Library() {
 
     createSchedule.mutate({
       announcementId: scheduleModalId,
-      playTime,
-      status: "Waiting"
+      playTime: playTime.toISOString(),
+      status: "Waiting",
+      recurring: false
     });
 
     setScheduleModalId(null);
@@ -56,7 +62,7 @@ export function Library() {
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto no-scrollbar pb-10">
+      <div className="flex-1 overflow-y-auto styled-scrollbar pb-10">
         {isLoading ? (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
             {[1,2,3,4].map(i => <div key={i} className="h-48 bg-gray-100 rounded-2xl animate-pulse" />)}
@@ -77,6 +83,7 @@ export function Library() {
                   <button 
                     onClick={() => toggleFavorite(ann)}
                     className="absolute top-5 right-5 text-gray-400 hover:text-[#F9BB00] transition-colors"
+                    title={ann.isFavorite ? 'Remove from favorites' : 'Add to favorites'}
                   >
                     <Star className={`w-5 h-5 ${ann.isFavorite ? 'fill-[#F9BB00] text-[#F9BB00]' : ''}`} />
                   </button>
@@ -87,12 +94,21 @@ export function Library() {
                 </p>
 
                 <div className="flex items-center gap-2 mb-4">
-                  <span className="px-2.5 py-1 bg-gray-100 text-gray-600 rounded text-xs font-bold uppercase tracking-wider">
-                    {ann.voice.split('-')[0]}
-                  </span>
-                  <span className="px-2.5 py-1 bg-blue-50 text-blue-600 rounded text-xs font-bold uppercase tracking-wider">
-                    ID / EN
-                  </span>
+                  {(() => {
+                    const parts = (ann.voice || "Pria").split("/");
+                    const vId = parts[0];
+                    const vEn = parts[1] || parts[0];
+                    return (
+                      <>
+                        <span className="px-2.5 py-1 bg-gray-100 text-gray-600 rounded text-xs font-bold uppercase tracking-wider">
+                          ID: {vId}
+                        </span>
+                        <span className="px-2.5 py-1 bg-blue-50 text-blue-600 rounded text-xs font-bold uppercase tracking-wider">
+                          EN: {vEn}
+                        </span>
+                      </>
+                    );
+                  })()}
                 </div>
 
                 <div className="flex items-center gap-2 pt-4 border-t border-gray-100 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity duration-300">
@@ -110,11 +126,7 @@ export function Library() {
                     <CalendarClock className="w-5 h-5" />
                   </button>
                   <button 
-                    onClick={() => {
-                      if(confirm("Are you sure you want to delete this announcement?")) {
-                        deleteAnnouncement.mutate(ann.id);
-                      }
-                    }}
+                    onClick={() => setDeleteAnnId(ann.id)}
                     className="p-2 bg-red-50 text-red-500 rounded-lg hover:bg-red-100 transition-colors"
                     title="Delete"
                   >
@@ -145,6 +157,7 @@ export function Library() {
                   required
                   value={scheduleTime}
                   onChange={e => setScheduleTime(e.target.value)}
+                  aria-label="Schedule time"
                   className="w-full px-4 py-3 rounded-xl bg-gray-50 border border-gray-200 text-lg font-semibold text-center text-[#004175] focus:outline-none focus:ring-2 focus:ring-[#004175]/20 mb-6"
                 />
                 <div className="flex justify-end gap-3">
@@ -158,6 +171,14 @@ export function Library() {
           </div>
         )}
       </AnimatePresence>
+
+      <ConfirmDialog
+        open={deleteAnnId !== null}
+        onOpenChange={(open) => !open && setDeleteAnnId(null)}
+        onConfirm={() => { if (deleteAnnId) deleteAnnouncement.mutate(deleteAnnId); setDeleteAnnId(null); }}
+        title="Hapus Pengumuman"
+        description="Apakah Anda yakin ingin menghapus pengumuman ini? Tindakan ini tidak dapat dibatalkan."
+      />
     </div>
   );
 }

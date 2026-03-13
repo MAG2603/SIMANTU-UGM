@@ -1,14 +1,121 @@
 {
-  "name": "rest-express",
+  "name": "simantu-ugm",
   "version": "1.0.0",
   "type": "module",
+  "main": "electron/main.cjs",
   "license": "MIT",
   "scripts": {
-    "dev": "NODE_ENV=development tsx server/index.ts",
-    "build": "tsx script/build.ts",
-    "start": "NODE_ENV=production node dist/index.cjs",
-    "check": "tsc",
-    "db:push": "drizzle-kit push"
+    "dev:server": "cross-env NODE_ENV=development tsx server/index.ts",
+    "dev:electron": "wait-on http://localhost:5000 && electron .",
+    "dev": "concurrently -k \"npm run dev:server\" \"npm run dev:electron\"",
+    "dev:web": "cross-env NODE_ENV=development tsx server/index.ts",
+    "build:renderer": "vite build",
+    "build:server": "esbuild server/index.ts --bundle --platform=node --format=cjs --outfile=dist-electron/server.js --external:electron --external:vite --external:@replit/vite-plugin-runtime-error-modal --alias:@shared=./shared",
+    "build:electron": "npm run build:renderer && npm run build:server",
+    "build": "npm run build:electron",
+    "prebuild:images": "node build/generate-installer-images.cjs",
+    "package": "npm run prebuild:images && npm run build && electron-builder --win --publish never",
+    "package:mac": "npm run build && electron-builder --mac --publish never",
+    "package:linux": "npm run build && electron-builder --linux --publish never",
+    "package:all": "npm run prebuild:images && npm run build && electron-builder --win --mac --linux --publish never",
+    "release:win": "npm run prebuild:images && npm run build && electron-builder --win --publish always",
+    "check": "tsc"
+  },
+  "build": {
+    "appId": "com.ugm.simantu",
+    "productName": "SIMANTU",
+    "directories": {
+      "output": "release"
+    },
+    "extraMetadata": {
+      "main": "electron/main.cjs"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "electron/**/*",
+      "!node_modules/**/*",
+      "node_modules/electron-updater/**/*",
+      "node_modules/builder-util-runtime/**/*",
+      "node_modules/semver/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "dist/public",
+        "to": "public"
+      }
+    ],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "${env.SIMANTU_GITHUB_OWNER}",
+        "repo": "${env.SIMANTU_GITHUB_REPO}",
+        "releaseType": "release"
+      }
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "client/public/logo_aplikasi.ico",
+      "requestedExecutionLevel": "asInvoker"
+    },
+    "mac": {
+      "target": [
+        "dmg"
+      ],
+      "icon": "client/public/logo_aplikasi.png",
+      "category": "public.app-category.utilities"
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "icon": "client/public/logo_aplikasi.png",
+      "category": "Utility"
+    },
+    "dmg": {
+      "title": "SIMANTU Installer",
+      "contents": [
+        {
+          "x": 130,
+          "y": 220
+        },
+        {
+          "x": 410,
+          "y": 220,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "allowElevation": true,
+      "installerIcon": "client/public/logo_aplikasi.ico",
+      "uninstallerIcon": "client/public/logo_aplikasi.ico",
+      "installerHeader": "build/installerHeader.bmp",
+      "installerHeaderIcon": "client/public/logo_aplikasi.ico",
+      "installerSidebar": "build/installerSidebar.bmp",
+      "uninstallerHeader": "build/uninstallerHeader.bmp",
+      "uninstallerSidebar": "build/uninstallerSidebar.bmp",
+      "include": "build/installer.nsh",
+      "deleteAppDataOnUninstall": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "SIMANTU",
+      "installerLanguages": [
+        "id_ID"
+      ],
+      "language": "1057",
+      "displayLanguageSelector": false,
+      "artifactName": "SIMANTU-Setup-${version}.${ext}",
+      "uninstallDisplayName": "SIMANTU - Sistem Informasi Pengumuman Terpadu"
+    },
+    "asar": true
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",
@@ -44,21 +151,18 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
-    "connect-pg-simple": "^10.0.0",
     "date-fns": "^3.6.0",
-    "drizzle-orm": "^0.39.3",
-    "drizzle-zod": "^0.7.0",
+    "electron-updater": "^6.8.3",
     "embla-carousel-react": "^8.6.0",
     "express": "^5.0.1",
-    "express-session": "^1.18.1",
+    "ffmpeg-static": "^5.3.0",
+    "fluent-ffmpeg": "^2.1.3",
     "framer-motion": "^11.13.1",
     "input-otp": "^1.4.2",
     "lucide-react": "^0.453.0",
-    "memorystore": "^1.6.7",
+    "msedge-tts": "^2.0.4",
+    "nanoid": "^5.0.9",
     "next-themes": "^0.4.6",
-    "passport": "^0.7.0",
-    "passport-local": "^1.0.0",
-    "pg": "^8.16.3",
     "react": "^18.3.1",
     "react-day-picker": "^8.10.1",
     "react-dom": "^18.3.1",
@@ -71,41 +175,32 @@
     "tw-animate-css": "^1.2.5",
     "vaul": "^1.1.2",
     "wouter": "^3.3.5",
-    "ws": "^8.18.0",
-    "zod": "^3.24.2",
-    "zod-validation-error": "^3.4.0"
+    "zod": "^3.23.8"
   },
   "devDependencies": {
-    "@replit/vite-plugin-cartographer": "^0.4.4",
-    "@replit/vite-plugin-dev-banner": "^0.1.1",
-    "@replit/vite-plugin-runtime-error-modal": "^0.0.3",
+    "@babel/preset-typescript": "^7.28.5",
     "@tailwindcss/typography": "^0.5.15",
     "@tailwindcss/vite": "^4.1.18",
-    "@types/connect-pg-simple": "^7.0.3",
     "@types/express": "^5.0.0",
-    "@types/express-session": "^1.18.0",
     "@types/node": "20.19.27",
-    "@types/passport": "^1.0.16",
-    "@types/passport-local": "^1.0.38",
     "@types/react": "^18.3.11",
     "@types/react-dom": "^18.3.1",
-    "@types/ws": "^8.5.13",
     "@vitejs/plugin-react": "^4.7.0",
     "autoprefixer": "^10.4.20",
-    "drizzle-kit": "^0.31.8",
+    "concurrently": "^9.1.0",
+    "cross-env": "^7.0.3",
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8",
     "esbuild": "^0.25.0",
     "postcss": "^8.4.47",
     "tailwindcss": "^3.4.17",
     "tsx": "^4.20.5",
     "typescript": "5.6.3",
-    "vite": "^7.3.0"
-  },
-  "overrides": {
-    "drizzle-kit": {
-      "@esbuild-kit/esm-loader": "npm:tsx@^4.20.4"
-    }
+    "vite": "^7.3.0",
+    "wait-on": "^8.0.1"
   },
   "optionalDependencies": {
+    "@rollup/rollup-win32-x64-msvc": "^4.59.0",
     "bufferutil": "^4.0.8"
   }
 }

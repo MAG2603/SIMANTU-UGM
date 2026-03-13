@@ -4,3 +4,23 @@ dist
 server/public
 vite.config.ts.*
 *.tar.gz
+
+# User data — jangan pernah push ke repo publik
+data/
+
+# Build outputs
+dist-electron/
+release/
+
+# Local dev/agent state
+.local/
+
+# Temporary / debug files
+fix_main.py
+test_long.js
+test_tts.mp3
+
+# Environment secrets (jika ada)
+.env
+.env.*
+!.env.example

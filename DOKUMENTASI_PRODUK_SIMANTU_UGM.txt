@@ -1,0 +1,775 @@
+DOKUMENTASI PRODUK
+SIMANTU - Sistem Informasi Pengumuman Terpadu UGM
+Versi Dokumen: 1.0
+Tanggal: 14 Maret 2026
+
+=================================================================
+1. RINGKASAN EKSEKUTIF
+=================================================================
+SIMANTU adalah aplikasi desktop untuk manajemen dan otomasi pengumuman
+bilingual (Bahasa Indonesia dan Bahasa Inggris) berbasis Text-to-Speech
+(TTS). Sistem ini menggabungkan frontend React, backend Express, dan shell
+Electron dalam satu produk operasional.
+
+Tujuan utama SIMANTU:
+1. Mempermudah operator membuat, menyimpan, dan memutar template pengumuman.
+2. Menjalankan pengumuman terjadwal secara otomatis.
+3. Menjaga kualitas pengucapan bilingual dengan aturan ejaan dan tag bahasa.
+4. Menyediakan antarmuka modern yang responsif untuk layar kecil hingga besar.
+
+Karakter produk:
+- Mode operasi: desktop app (Electron).
+- Bahasa UI: Indonesia (utama), dengan dukungan teks EN pada konten.
+- Model penyimpanan data saat ini: file JSON lokal.
+- Integrasi TTS: Microsoft Edge TTS + ffmpeg transcode.
+
+=================================================================
+2. LATAR BELAKANG DAN TUJUAN SISTEM
+=================================================================
+Kebutuhan operasional pengumuman di lingkungan institusi pendidikan menuntut:
+1. Proses cepat dan konsisten.
+2. Jadwal terotomasi tanpa intervensi terus-menerus.
+3. Dukungan pengucapan bilingual yang jelas.
+4. Kontrol penuh operator saat terjadi benturan antara pengumuman manual
+   dan jadwal otomatis.
+
+SIMANTU dibangun untuk memenuhi kebutuhan di atas melalui:
+- Template library (CRUD).
+- Scheduler harian dengan opsi recurring.
+- Mesin playback yang mendukung antrean.
+- Penanganan konflik jadwal vs manual play dengan modal keputusan.
+- Notifikasi visual dan desktop.
+
+=================================================================
+3. RUANG LINGKUP PRODUK
+=================================================================
+Ruang lingkup yang dicakup sistem:
+1. Pengelolaan template pengumuman:
+   - Buat, baca, ubah, hapus template.
+   - Simpan favorit.
+   - Simpan pilihan suara per bahasa.
+2. Pemutaran pengumuman:
+   - Manual play dari dashboard.
+   - Dukungan antrean jika sedang ada playback aktif.
+3. Penjadwalan:
+   - Buat jadwal pemutaran pada jam tertentu.
+   - Opsi recurring (harian).
+   - Claim schedule untuk mencegah duplikasi eksekusi.
+4. Konfigurasi audio:
+   - Pilih output device.
+   - Atur volume.
+   - Aturan pengucapan (spelling rules).
+   - Bell pembuka/penutup kustom.
+5. Pengemasan desktop:
+   - Build renderer dan server.
+   - Packaging installer Windows/macOS/Linux (sesuai script).
+
+Hal yang belum dicakup penuh:
+- Multi-user dengan autentikasi/otorisasi.
+- Sinkronisasi cloud/database terpusat.
+- Audit log tingkat enterprise.
+
+=================================================================
+4. TEKNOLOGI DAN STACK
+=================================================================
+4.1 Frontend
+- React 18
+- TypeScript
+- Vite
+- Tailwind CSS
+- Framer Motion
+- TanStack Query
+- Wouter (routing)
+- Radix UI + komponen UI internal
+
+4.2 Backend
+- Express 5
+- TypeScript (dijalankan dengan TSX saat development)
+- Zod (validasi schema)
+
+4.3 Desktop Shell
+- Electron 33
+- Preload bridge melalui contextBridge (preload.cjs)
+
+4.4 Audio dan TTS
+- msedge-tts
+- ffmpeg-static
+- fluent-ffmpeg
+- Web Audio API (decodeAudioData, AnalyserNode, GainNode)
+
+4.5 Build dan Packaging
+- Vite (renderer)
+- esbuild (server bundle untuk electron)
+- electron-builder (installer)
+- electron-updater (auto-update distribusi over-the-air via GitHub Releases)
+
+=================================================================
+5. ARSITEKTUR SISTEM
+=================================================================
+5.1 Gambaran Arsitektur Tingkat Tinggi
+1. UI React berjalan dalam BrowserWindow Electron.
+2. UI memanggil REST API internal pada /api/*.
+3. Express server memproses API dan mengakses storage JSON.
+4. Untuk TTS, server memanggil msedge-tts, lalu mentranscode audio ke
+   MPEG1 Layer3 agar kompatibel dengan decodeAudioData.
+5. Audio diputar di client menggunakan Web Audio API.
+
+5.2 Pola Komunikasi
+- Frontend -> Backend: HTTP fetch JSON + endpoint binary audio.
+- Frontend -> Electron Main: IPC via electronAPI (preload).
+- Electron Main -> Frontend: event window-hidden (untuk stop audio saat hide).
+- Electron Main -> Frontend: event app-update-status (untuk notifikasi pembaruan).
+- Electron updater -> GitHub Releases: cek versi dan unduh paket pembaruan.
+
+5.3 Mode Runtime
+- Development:
+  - dev:server menjalankan Express + Vite middleware.
+  - dev:electron menunggu http://localhost:5000 lalu membuka Electron.
+- Production:
+  - Electron menjalankan server ter-embed dari bundle dist-electron/server.js,
+    lalu membuka URL localhost internal.
+
+=================================================================
+6. STRUKTUR MODUL APLIKASI
+=================================================================
+6.1 Frontend Utama
+1. App.tsx
+   - Root provider: QueryClientProvider, AppProvider, TooltipProvider.
+   - Routing halaman: /, /library, /scheduler, /settings.
+   - Opening animation satu kali per sesi.
+   - Network banner saat offline.
+   - Deferred schedule dialog global.
+
+2. Layout
+   - Sidebar: navigasi utama, about modal.
+   - TitleBar: kontrol window + notifikasi jadwal mendekat.
+   - RightPanel: clock, statistik, antrean, daftar template cepat.
+
+3. Halaman
+   - Dashboard:
+     - InputArea untuk teks bilingual, voice, save, play/stop.
+     - Waveform monitor.
+   - Library page (di SecondaryPages.tsx):
+     - Tabel template + modal create/edit.
+   - Scheduler page (di SecondaryPages.tsx):
+     - Statistik jadwal + daftar jadwal + modal set jadwal.
+   - Settings page (di SecondaryPages.tsx):
+     - Output device, volume, aturan ejaan, bell kustom, info aplikasi.
+
+6.2 Backend
+1. server/index.ts
+   - Inisialisasi Express dan middleware.
+   - Logging request API.
+   - Registrasi route.
+   - Serve static untuk production.
+   - Setup Vite middleware untuk development.
+
+2. server/routes.ts
+   - Endpoint announcement CRUD.
+   - Endpoint schedule CRUD + claim.
+   - Endpoint TTS synthesize + list voices.
+   - Endpoint status koneksi.
+
+3. server/storage.ts
+   - Implementasi JsonFileStorage.
+   - CRUD announcement/schedule.
+   - Auto-cleanup schedule Done non-recurring > 24 jam.
+   - Claim schedule atomik (Waiting -> Playing).
+
+4. server/tts.ts
+   - Parsing tag [en: ...] dan [id: ...] (case-insensitive, toleran variasi).
+   - Spelling fallback sistem.
+   - Expand abbreviation untuk segmen Indonesia.
+   - Retry synthesize.
+   - Transcode ke MPEG1 Layer3.
+
+6.3 Electron
+1. electron/main.cjs (aktif sebagai entry utama)
+   - Buat BrowserWindow fullscreen + frameless.
+   - Integrasi tray icon (hide to tray).
+   - Native notification.
+   - Startup server internal saat production.
+   - Auto-updater: cek GitHub Releases saat startup (delay 5 detik),
+     download otomatis, notifikasi native per tahap (checking/available/
+     downloading/downloaded/error), IPC handle untuk cek manual dan
+     trigger install dari renderer.
+
+2. electron/preload.cjs
+   - Mengekspose electronAPI ke renderer:
+     - minimize
+     - maximize
+     - close
+     - showNotification
+     - onWindowHide / offWindowHide
+     - checkForUpdates (invoke app-update-check)
+     - installUpdateNow (invoke app-update-install)
+     - onUpdateStatus / offUpdateStatus (listener app-update-status)
+
+3. electron/main.js
+   - File alternatif/legacy dengan pendekatan notifikasi overlay kustom.
+   - Bukan entry utama package saat ini.
+
+=================================================================
+7. DESAIN DATA DAN PENYIMPANAN
+=================================================================
+7.1 Lokasi Data
+Storage lokal JSON:
+- Default: ./data/simantu-data.json (relative ke working directory)
+- Override: env SIMANTU_DATA_DIR
+
+7.2 Struktur Data JSON
+Objek root:
+- announcements: array
+- schedules: array
+- nextAnnouncementId: number
+- nextScheduleId: number
+
+7.3 Skema Announcement
+- id: number
+- title: string
+- contentId: string
+- contentEn: string
+- voice: string (format contoh: "Pria/Wanita")
+- isFavorite: boolean
+- createdAt: string ISO timestamp
+
+7.4 Skema Schedule
+- id: number
+- announcementId: number (FK ke announcement.id)
+- playTime: string ISO timestamp
+- status: string (Waiting | Playing | Done)
+- recurring: boolean (opsional, default false)
+
+7.5 Validasi Data
+- Validasi request body menggunakan Zod di shared/schema.ts dan shared/routes.ts.
+- API update menerima partial schema.
+
+=================================================================
+8. DOKUMENTASI API
+=================================================================
+Base URL (dev): http://localhost:5000
+
+8.1 Announcements
+1. GET /api/announcements
+   - Deskripsi: ambil semua template.
+   - Response 200: Announcement[]
+
+2. POST /api/announcements
+   - Deskripsi: buat template baru.
+   - Body:
+     {
+       "title": "...",
+       "contentId": "...",
+       "contentEn": "...",
+       "voice": "Pria/Pria",
+       "isFavorite": false
+     }
+   - Response 201: Announcement
+   - Response 400: { message, field? }
+
+3. PUT /api/announcements/:id
+   - Deskripsi: update template.
+   - Body: partial insert schema.
+   - Response 200: Announcement
+   - Response 404: { message: "Announcement not found" }
+
+4. DELETE /api/announcements/:id
+   - Deskripsi: hapus template.
+   - Response 204
+   - Response 404
+
+8.2 Schedules
+1. GET /api/schedules
+   - Deskripsi: ambil semua jadwal.
+
+2. POST /api/schedules
+   - Deskripsi: buat jadwal.
+   - Body:
+     {
+       "announcementId": 1,
+       "playTime": "2026-03-14T08:00:00.000Z",
+       "status": "Waiting",
+       "recurring": true
+     }
+
+3. PUT /api/schedules/:id
+   - Deskripsi: update jadwal.
+   - Body: partial insert schedule schema.
+
+4. POST /api/schedules/:id/claim
+   - Deskripsi: klaim jadwal untuk mencegah race condition.
+   - Sukses jika status awal Waiting.
+   - Response 409 jika sudah diklaim/tidak Waiting.
+
+5. DELETE /api/schedules/:id
+   - Deskripsi: hapus jadwal.
+
+8.3 TTS
+1. POST /api/tts
+   - Body:
+     {
+       "text": "isi teks",
+       "voice": "id-ID-ArdiNeural"
+     }
+   - Response 200: binary audio/mpeg
+
+2. GET /api/tts/voices
+   - Response: daftar preset suara.
+
+8.4 Status
+1. GET /api/status
+   - Response 200: { "connected": true }
+
+=================================================================
+9. LOGIKA BISNIS INTI
+=================================================================
+9.1 Alur Manual Playback
+1. Operator menulis teks ID/EN di dashboard.
+2. Operator pilih voice ID dan voice EN.
+3. Saat tombol Play ditekan:
+   - Jika sedang Preparing: request ditolak dengan toast.
+   - Jika sedang Playing: konten masuk antrean.
+   - Jika idle: lanjut proses TTS + playback.
+4. Bell pembuka/penutup diputar jika fitur bell aktif.
+
+9.2 Alur Scheduler Otomatis
+1. Sistem cek schedule periodik (30 detik).
+2. Kondisi eksekusi:
+   - schedulerEnabled = true
+   - tidak sedang playing/preparing
+   - antrean kosong
+3. Schedule due diklaim lewat endpoint claim.
+4. Jika berhasil klaim dan pengumuman valid:
+   - playAudio dipanggil.
+   - Setelah selesai:
+     - recurring => geser ke hari berikutnya.
+     - non-recurring => status Done.
+
+9.3 Grace Period dan Robustness
+- Jadwal overdue lebih dari 5 menit dianggap stale, ditandai Done.
+- Jadwal yang announcement-nya sudah tidak ada ditandai Done.
+- Klaim mencegah double-play akibat overlap interval/tick.
+
+9.4 Konflik Manual vs Jadwal
+Saat operator menekan Play dan ada jadwal prioritas (imminent/starting),
+sistem menampilkan modal dengan 3 opsi:
+1. Lanjutkan manual + batalkan occurrence jadwal bentrok.
+2. Lanjutkan manual tanpa membatalkan jadwal (jadwal ditahan/defer).
+3. Batalkan pengumuman manual (jadwal tetap prioritas).
+
+Jika opsi defer dipilih:
+- Setelah playback manual selesai, dialog konfirmasi muncul:
+  - Putar jadwal sekarang.
+  - Lewati jadwal ini.
+
+9.5 Antrean Pengumuman
+- Jika playback aktif dan operator menekan Play lagi, item masuk queue.
+- Queue diputar otomatis berurutan setelah playback aktif selesai.
+- Stop/Reset mengosongkan queue.
+
+=================================================================
+10. PIPELINE AUDIO DAN TTS
+=================================================================
+10.1 Ringkasan Pipeline
+Input teks -> preprocessing -> request TTS -> audio mp3 dari server ->
+decodeAudioData -> play via AudioBufferSourceNode -> output speaker.
+
+10.2 Preprocessing Teks
+1. Apply spelling rules (custom + default).
+2. Dukungan tag bahasa inline:
+   - [en: phrase]
+   - [id: phrase]
+3. Parser tag:
+   - case-insensitive
+   - toleran spasi
+   - toleran penutup ] atau }
+4. Pembersihan marker dangling jika format tidak rapih.
+
+10.3 Default Spelling Rules
+Rule bawaan (aktif default):
+- UGM -> U G M
+- L1 -> L Satu
+- L5 -> L Lima
+- ETD -> E T D
+- WIB -> Waktu Indonesia Barat
+
+10.4 Fallback Spelling di Server
+Server tetap menerapkan fallback untuk menjaga kualitas pengucapan jika
+aturan sisi client tidak terpasang.
+
+10.5 Segmentasi dan Voice Switching
+- Root language ditentukan dari voice ID.
+- Segmen [en: ] di teks ID bisa menggunakan EN voice (atau multilingual voice).
+- Segmen [id: ] di teks EN bisa menggunakan ID voice (atau multilingual voice).
+
+10.6 Kompatibilitas Codec
+msedge-tts menghasilkan MPEG2 Layer3 24kHz yang tidak selalu kompatibel
+langsung dengan decodeAudioData Chromium.
+Solusi:
+- Server mentranscode audio ke MPEG1 Layer3 44.1kHz via ffmpeg.
+
+=================================================================
+11. NOTIFIKASI DAN STATUS
+=================================================================
+11.1 Notifikasi Jadwal Mendekat
+- Di title bar ada countdown real-time (mm:ss) untuk jadwal terdekat.
+- Jika schedule sudah Playing, title bar menampilkan mode processing.
+
+11.2 Notifikasi Desktop
+- Renderer memanggil electronAPI.showNotification.
+- Main process menampilkan native notification.
+- Fallback body tersedia agar bar notifikasi tidak menampilkan teks kosong.
+
+11.3 Notifikasi Pembaruan Aplikasi
+- Auto-updater mengirimkan notifikasi native di setiap tahap:
+  - Saat update tersedia: "Update SIMANTU tersedia — Versi X sedang diunduh."
+  - Saat download selesai: "Pembaruan SIMANTU siap — Restart untuk memasang."
+- Renderer menerima event app-update-status dan menampilkan toast.
+- Halaman Settings menampilkan status update real-time dan tombol instal.
+
+11.4 Network Banner
+- Saat browser offline, banner warning muncul:
+  "Tidak ada koneksi internet - Fitur TTS tidak dapat digunakan".
+
+=================================================================
+12. PERSISTENSI PREFERENSI PENGGUNA
+=================================================================
+Data berikut disimpan di localStorage:
+1. simantu_volume
+2. simantu_output_id
+3. simantu_scheduler_enabled
+4. simantu_spelling_rules
+5. simantu_bell_library
+6. simantu_active_bell_opening
+7. simantu_active_bell_ending
+8. simantu_opening_seen (sessionStorage, bukan localStorage)
+
+=================================================================
+13. RESPONSIVE DESIGN
+=================================================================
+Pendekatan responsif terbaru:
+1. Mobile-first untuk komponen kritikal.
+2. Penyesuaian skala di layar besar (xl/2xl).
+3. Outer canvas dibesarkan hingga max-w 2400px.
+4. Right panel bertingkat lebar:
+   - lg: 300px
+   - xl: 360px
+   - 2xl: 420px
+5. Spacing dan typography header meningkat di layar besar.
+6. Input area memperbesar textarea dan padding untuk kenyamanan operator.
+7. Table/list panjang menggunakan overflow horizontal terkontrol.
+
+=================================================================
+14. KONFIGURASI, BUILD, DAN DISTRIBUSI
+=================================================================
+14.1 Prasyarat
+1. Node.js (disarankan LTS modern).
+2. npm.
+3. Koneksi internet untuk TTS (runtime).
+
+14.2 Script Penting
+1. npm run dev
+   - Jalankan server + electron mode dev.
+2. npm run dev:web
+   - Jalankan server web saja.
+3. npm run build:renderer
+   - Build frontend via Vite ke dist/public.
+4. npm run build:server
+   - Bundle backend untuk electron ke dist-electron/server.js.
+5. npm run build
+   - build:renderer + build:server.
+6. npm run package
+   - Build + electron-builder installer Windows (tanpa publish).
+7. npm run release:win
+   - Build lengkap + paket Windows + publish ke GitHub Releases
+     (memerlukan env var GH_TOKEN).
+8. npm run package:mac / package:linux / package:all
+
+14.3 Output Build
+- dist/public: aset frontend produksi.
+- dist-electron/server.js: backend bundle untuk mode packaged.
+- release/: output installer (electron-builder).
+
+14.4 Konfigurasi Packaging
+Di package.json bagian build:
+- appId: com.ugm.simantu
+- productName: SIMANTU
+- target Windows: nsis
+- icon: client/public/logo_aplikasi.ico
+- NSIS kustom: include build/installer.nsh
+
+=================================================================
+15. ENVIRONMENT VARIABLE
+=================================================================
+1. PORT
+   - Port server Express (default 5000).
+2. NODE_ENV
+   - development atau production.
+3. SIMANTU_DATA_DIR
+   - Direktori penyimpanan data JSON.
+   - Production Electron: di-set ke app.getPath("userData").
+4. SIMANTU_GITHUB_OWNER
+   - Username/organisation GitHub pemilik repository rilis.
+   - Dibutuhkan oleh auto-updater dan script release:win.
+5. SIMANTU_GITHUB_REPO
+   - Nama repository GitHub tempat rilis dipublikasikan.
+6. GH_TOKEN / GITHUB_TOKEN
+   - Personal Access Token GitHub dengan scope "repo" atau "public_repo".
+   - Digunakan oleh electron-builder untuk mempublikasikan release.
+   - Digunakan oleh electron-updater untuk cek/unduh dari private repo.
+
+=================================================================
+16. KEAMANAN DAN BATASAN ARSITEKTUR
+=================================================================
+16.1 Praktik yang Sudah Diterapkan
+1. contextIsolation aktif di Electron BrowserWindow.
+2. nodeIntegration dimatikan.
+3. Akses API Electron dibatasi melalui preload bridge.
+4. Validasi input backend menggunakan Zod.
+
+16.2 Batasan Saat Ini
+1. Belum ada autentikasi pengguna.
+2. Belum ada enkripsi data local file.
+3. Belum ada role-based access control.
+
+=================================================================
+17. KNOWN ISSUE (STATUS TERKINI)
+=================================================================
+17.1 Build Server [RESOLVED]
+Isu build:server yang sebelumnya terdokumentasikan telah diselesaikan:
+- Dependency @babel/preset-typescript ditambahkan sebagai devDependency.
+- extraMetadata.main dikoreksi ke "electron/main.cjs".
+- npm run build (renderer + server) berjalan stabil.
+
+17.2 Runtime Dev
+- npm run dev dapat gagal bergantung kondisi environment/process lokal.
+- Perlu prosedur restart process dan cek port untuk troubleshooting.
+
+=================================================================
+17A. FITUR AUTO-UPDATE (PEMBARUAN OTOMATIS)
+=================================================================
+17A.1 Gambaran Umum
+SIMANTU mendukung pembaruan aplikasi over-the-air (OTA) menggunakan
+electron-updater yang terhubung ke GitHub Releases. Saat versi baru
+dirilis, aplikasi yang sudah terpasang di komputer pengguna akan
+memberitahu operator dan dapat memperbarui dirinya sendiri.
+
+17A.2 Cara Kerja (Sisi Pengguna)
+1. Saat aplikasi pertama kali dijalankan, pengecekan update berjalan
+   otomatis setelah 5 detik.
+2. Jika ada versi baru, notifikasi native muncul dan toast tampil di UI.
+3. Unduhan berjalan di latar belakang secara otomatis.
+4. Setelah unduhan selesai, notifikasi "siap instal" muncul.
+5. Operator dapat mengklik tombol "Pasang & Restart" di halaman Settings,
+   atau menunggu sampai aplikasi ditutup dan dibuka kembali.
+6. Cek manual juga tersedia via menu tray atau tombol di halaman Settings.
+
+17A.3 Cara Kerja (Sisi Teknis)
+- electron-updater membaca app-update.yml yang ter-embed di package.
+- Feed URL: GitHub Releases pada repository yang dikonfigurasi.
+- IPC channels:
+  app-update-check  (handle)  — trigger cek manual dari renderer.
+  app-update-install (handle) — trigger quitAndInstall dari renderer.
+  app-update-status  (send)   — broadcast status ke renderer.
+- Status events: checking | available | downloading | downloaded |
+  not-available | error | disabled.
+- Auto-update hanya aktif pada aplikasi yang sudah di-install
+  (app.isPackaged = true). Pada mode dev menampilkan status "disabled".
+
+17A.4 Setup GitHub Repository untuk Rilis
+Prasyarat sekali-pakai sebelum rilis pertama:
+
+1. Buat repository GitHub (public atau private).
+2. Buat Personal Access Token (PAT) dengan scope:
+   - public_repo  (untuk repository publik)
+   - repo         (untuk repository private)
+3. Pastikan package.json build.publish dikonfigurasi:
+   {
+     "provider": "github",
+     "owner": "<SIMANTU_GITHUB_OWNER>",
+     "repo":  "<SIMANTU_GITHUB_REPO>"
+   }
+4. Set environment variable sebelum menjalankan release:
+   set SIMANTU_GITHUB_OWNER=<username-atau-org>
+   set SIMANTU_GITHUB_REPO=<nama-repo>
+   set GH_TOKEN=<personal-access-token>
+
+17A.5 Prosedur Rilis Versi Baru (Developer)
+Langkah-langkah setiap kali ingin merilis pembaruan:
+
+1. Perbarui versi di package.json:
+   "version": "X.Y.Z"
+
+2. Pastikan env var sudah di-set (lihat 17A.4).
+
+3. Jalankan:
+   npm run release:win
+
+   Script ini menjalankan secara berurutan:
+   a. prebuild:images   — buat ikon .ico dari sumber.
+   b. build            — build renderer + server bundle.
+   c. electron-builder --win --publish always
+                       — paket installer + upload ke GitHub Releases.
+
+4. GitHub Releases secara otomatis akan berisi:
+   - SIMANTU-Setup-X.Y.Z.exe   (installer NSIS)
+   - SIMANTU-X.Y.Z-full.nupkg  (paket update differensial)
+   - latest.yml                 (feed versi untuk auto-updater)
+
+5. Aplikasi yang sudah terpasang di komputer pengguna akan mendeteksi
+   rilis ini pada pengecekan berikutnya.
+
+17A.6 Konfigurasi NSIS Installer
+- oneClick: false  (installer tampilkan wizard)
+- perMachine: false  (instalasi per-user, tidak butuh admin)
+- allowToChangeInstallationDirectory: true
+- requestedExecutionLevel: asInvoker
+
+17A.7 Catatan Penting
+- Pada mode dev (npm run dev), updater otomatis dinonaktifkan.
+- AppUserModelId di main.cjs HARUS sama dengan appId di package.json
+  agar nama aplikasi muncul benar di bar notifikasi Windows.
+  Nilai saat ini: com.ugm.simantu
+- Jika GitHub repo bersifat private, GH_TOKEN juga diperlukan di
+  mesin pengguna (tidak praktis). Direkomendasikan menggunakan
+  repository publik untuk distribusi pembaruan.
+
+=================================================================
+18.1 SOP Menjalankan Aplikasi (Dev)
+1. Install dependency:
+   npm install
+2. Jalankan:
+   npm run dev
+3. Pastikan server API merespons:
+   GET /api/status -> { connected: true }
+
+18.2 SOP Membuat Template
+1. Buka menu Library.
+2. Klik Buat Template.
+3. Isi judul, teks ID/EN, dan voice.
+4. Simpan.
+
+18.3 SOP Menjadwalkan Pengumuman
+1. Buka Scheduler.
+2. Klik Tambah Jadwal.
+3. Pilih jam, template, dan recurring jika perlu.
+4. Simpan.
+
+18.4 SOP Menangani Konflik Jadwal
+Saat modal konflik muncul pada Play manual:
+1. Pilih batalkan schedule bentrok jika manual harus prioritas.
+2. Pilih defer jika schedule tetap ingin diputar setelah manual.
+3. Pilih urungkan manual jika jadwal lebih prioritas.
+
+=================================================================
+19. TESTING CHECKLIST
+=================================================================
+A. Functional
+1. CRUD template berjalan.
+2. Favorite toggle berjalan.
+3. Manual play ID/EN berjalan.
+4. Bell opening/ending berjalan.
+5. Queue berjalan berurutan.
+6. Scheduler due berjalan otomatis.
+7. Recurring schedule bergeser ke hari berikutnya.
+8. Konflik manual vs scheduler memunculkan modal 3 opsi.
+9. Deferred schedule dialog muncul setelah manual selesai.
+10. Skip deferred schedule memperbarui status sesuai recurring/non-recurring.
+
+B. API
+1. Semua endpoint /api/announcements valid.
+2. Semua endpoint /api/schedules valid termasuk claim.
+3. /api/tts menghasilkan audio binary.
+4. /api/status merespons connected true.
+
+C. UI/UX
+1. Responsive di mobile.
+2. Responsive di desktop standar.
+3. Responsive di layar besar/ultra-wide.
+4. Modal tidak overflow viewport.
+5. Table/list panjang tetap dapat diakses.
+
+D. Stability
+1. Stop/reset tidak meninggalkan playback menggantung.
+2. Queue bersih saat stop/reset.
+3. Scheduler tidak menduplikasi playback untuk schedule sama.
+
+=================================================================
+20. RENCANA PENGEMBANGAN LANJUT
+=================================================================
+1. Migrasi storage dari JSON ke PostgreSQL (multi user readiness).
+2. Menambahkan autentikasi operator/admin.
+3. Menambahkan audit log lengkap (siapa, kapan, aksi apa).
+4. Menambahkan backup/restore data dari UI.
+5. Menambahkan observability:
+   - health check lebih lengkap
+   - event log terstruktur
+6. Memperbaiki pipeline build server agar packaging end-to-end stabil.
+
+=================================================================
+21. PETA DIREKTORI RINGKAS
+=================================================================
+client/
+- src/
+  - App.tsx
+  - pages/
+    - Dashboard.tsx
+    - SecondaryPages.tsx (Library, Scheduler, Settings)
+  - context/
+    - AppContext.tsx
+  - components/
+    - layout/ (Sidebar, TitleBar, RightPanel)
+    - dashboard/ (InputArea, Library)
+    - ui/ (komponen dasar)
+
+server/
+- index.ts
+- routes.ts
+- storage.ts
+- tts.ts
+- static.ts
+- vite.ts
+
+electron/
+- main.cjs (entry aktif)
+- preload.cjs
+- notification*.html
+
+shared/
+- schema.ts
+- routes.ts
+
+=================================================================
+22. KESIMPULAN
+=================================================================
+SIMANTU telah memenuhi kebutuhan inti sistem pengumuman terintegrasi:
+1. Manajemen template bilingual.
+2. Playback manual dengan kualitas audio yang terkontrol.
+3. Scheduler otomatis dengan mekanisme anti-race via claim.
+4. Penanganan konflik jadwal yang eksplisit dan aman bagi operator.
+5. UX modern dengan dukungan responsif lintas ukuran layar.
+6. Pembaruan aplikasi otomatis (OTA) via GitHub Releases dengan
+   notifikasi native dan UI instal satu klik di halaman Settings.
+7. Build pipeline end-to-end stabil untuk distribusi installer Windows.
+
+Aplikasi siap untuk rilis produksi. Untuk siklus pembaruan selanjutnya,
+cukup jalankan npm run release:win setelah menaikkan versi di package.json.
+
+=================================================================
+23. CATATAN AKADEMIK (UNTUK BAHAN TUGAS AKHIR)
+=================================================================
+Dokumen ini dapat langsung dijadikan lampiran teknis produk pada laporan
+Tugas Akhir, khususnya untuk bab:
+- Analisis kebutuhan sistem
+- Perancangan arsitektur
+- Implementasi
+- Pengujian
+- Evaluasi dan pengembangan lanjutan
+
+Saran format di laporan TA:
+1. Ambil Bab 1-5 untuk deskripsi sistem.
+2. Ambil Bab 6-13 untuk implementasi teknis.
+3. Ambil Bab 14-19 untuk deployment dan pengujian.
+4. Ambil Bab 20-22 untuk evaluasi dan future work.
+
+SELESAI

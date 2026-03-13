@@ -70,8 +70,65 @@
   }
   .no-scrollbar {
     -ms-overflow-style: none;  /* IE and Edge */
-    scrollbar-width: none;  /* Firefox */
   }
+}
+
+/* Electron drag regions */
+.drag-region { -webkit-app-region: drag; }
+.no-drag-region { -webkit-app-region: no-drag; }
+
+/* Waveform bar — dynamic height/background set via CSS custom properties */
+.waveform-bar {
+  max-width: 4px;
+  min-width: 2px;
+  will-change: height;
+  border-radius: 9999px;
+  flex: 1 1 0%;
+  height: var(--bar-h, 0%);
+  background: var(--bar-bg, transparent);
+}
+
+/* Custom styled scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(0, 65, 117, 0.15);
+  border-radius: 100px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 65, 117, 0.3);
+}
+
+/* Dark background scrollbar variant */
+.dark-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+}
+.dark-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+/* Styled scrollbar class for explicit usage */
+.styled-scrollbar::-webkit-scrollbar {
+  width: 6px;
+}
+.styled-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+  margin: 8px 0;
+}
+.styled-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(0, 65, 117, 0.12);
+  border-radius: 100px;
+}
+.styled-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 65, 117, 0.25);
 }
 
 /* Waveform Animation */
