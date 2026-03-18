@@ -73,10 +73,6 @@
   }
 }
 
-/* Electron drag regions */
-.drag-region { -webkit-app-region: drag; }
-.no-drag-region { -webkit-app-region: no-drag; }
-
 /* Waveform bar — dynamic height/background set via CSS custom properties */
 .waveform-bar {
   max-width: 4px;

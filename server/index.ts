@@ -82,21 +82,49 @@ export async function startServer(): Promise<number> {
     await setupVite(httpServer, app);
   }
 
-  const port = parseInt(process.env.PORT || "5000", 10);
+  const configuredPort = parseInt(process.env.PORT || "5000", 10);
 
-  return new Promise<number>((resolve) => {
-    httpServer.listen(
-      {
-        port,
-        host: "127.0.0.1",
-      },
-      () => {
-        log(`serving on port ${port}`);
-        resolve(port);
-      },
-    );
-  });
+  const listenOnPort = (port: number) => {
+    return new Promise<number>((resolve, reject) => {
+      const onError = (error: NodeJS.ErrnoException) => {
+        reject(error);
+      };
+
+      httpServer.once("error", onError);
+      httpServer.listen(
+        {
+          port,
+          host: "127.0.0.1",
+        },
+        () => {
+          httpServer.off("error", onError);
+          const address = httpServer.address();
+          const activePort = typeof address === "object" && address ? address.port : port;
+          log(`serving on port ${activePort}`);
+          resolve(activePort);
+        },
+      );
+    });
+  };
+
+  try {
+    return await listenOnPort(configuredPort);
+  } catch (error) {
+    const shouldFallbackToRandomPort =
+      process.env.SIMANTU_EMBEDDED_ELECTRON === "1" &&
+      (error as NodeJS.ErrnoException)?.code === "EADDRINUSE";
+
+    if (shouldFallbackToRandomPort) {
+      log(`port ${configuredPort} in use, retrying with a random free port`, "express");
+      return listenOnPort(0);
+    }
+
+    throw error;
+  }
 }
 
-// Auto-start when running directly (not imported by Electron)
-startServer();
+// Standalone server entry should auto-start, but the Electron main process
+// manages embedded startup explicitly after wiring production environment vars.
+if (process.env.SIMANTU_EMBEDDED_ELECTRON !== "1") {
+  void startServer();
+}

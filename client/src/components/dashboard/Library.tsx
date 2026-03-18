@@ -93,7 +93,7 @@ export function Library() {
                   {ann.contentEn}
                 </p>
 
-                <div className="flex items-center gap-2 mb-4">
+                <div className="flex flex-row flex-wrap items-center gap-2 mb-4">
                   {(() => {
                     const parts = (ann.voice || "Pria").split("/");
                     const vId = parts[0];

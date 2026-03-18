@@ -148,10 +148,18 @@ function UpcomingNotification() {
 
 export function TitleBar() {
   const isElectron = !!window.electronAPI;
+  const titleBarRef = useRef<HTMLDivElement>(null);
+  const windowControlsRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    titleBarRef.current?.style.setProperty("-webkit-app-region", "drag");
+    windowControlsRef.current?.style.setProperty("-webkit-app-region", "no-drag");
+  }, []);
 
   return (
     <div
-      className="drag-region h-10 bg-gradient-to-r from-[#F9BB00] via-[#f5c623] to-[#F9BB00] flex items-center justify-between px-4 shrink-0 select-none shadow-md shadow-[#F9BB00]/20 relative z-50"
+      ref={titleBarRef}
+      className="h-10 bg-gradient-to-r from-[#F9BB00] via-[#f5c623] to-[#F9BB00] flex items-center justify-between px-4 shrink-0 select-none shadow-md shadow-[#F9BB00]/20 relative z-50"
     >
       {/* Left: UGM Logo + App Name */}
       <div className="flex items-center gap-3">
@@ -171,7 +179,8 @@ export function TitleBar() {
       {/* Right: Window Controls */}
       {isElectron && (
         <div
-          className="no-drag-region flex items-center gap-0.5"
+          ref={windowControlsRef}
+          className="flex items-center gap-0.5"
         >
           <button
             onClick={() => window.electronAPI?.minimize()}

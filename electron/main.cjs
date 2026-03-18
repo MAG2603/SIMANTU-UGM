@@ -1,13 +1,15 @@
 const { app, BrowserWindow, ipcMain, Notification, Tray, Menu, dialog } = require("electron");
-const { autoUpdater } = require("electron-updater");
+const fs = require("fs");
 const path = require("path");
 
 app.setName("SIMANTU");
 app.setAppUserModelId("com.ugm.simantu");
 
 const UPDATE_STATUS_CHANNEL = "app-update-status";
-const GITHUB_OWNER = process.env.SIMANTU_GITHUB_OWNER || "";
-const GITHUB_REPO = process.env.SIMANTU_GITHUB_REPO || "";
+const DEFAULT_GITHUB_OWNER = "MAG2603";
+const DEFAULT_GITHUB_REPO = "SIMANTU-UGM";
+const GITHUB_OWNER = process.env.SIMANTU_GITHUB_OWNER || DEFAULT_GITHUB_OWNER;
+const GITHUB_REPO = process.env.SIMANTU_GITHUB_REPO || DEFAULT_GITHUB_REPO;
 const GITHUB_TOKEN = process.env.GH_TOKEN || process.env.GITHUB_TOKEN || "";
 
 let mainWindow = null;
@@ -15,6 +17,44 @@ let tray = null;
 let isQuitting = false;
 let updaterInitialized = false;
 let updateReadyToInstall = false;
+let autoUpdater = null;
+let autoUpdaterLoadError = "";
+
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+if (!hasSingleInstanceLock) {
+  app.quit();
+}
+
+function getAutoUpdater() {
+  if (autoUpdater) {
+    return autoUpdater;
+  }
+
+  try {
+    ({ autoUpdater } = require("electron-updater"));
+    return autoUpdater;
+  } catch (error) {
+    autoUpdaterLoadError = error instanceof Error ? error.message : String(error);
+    console.warn("[SIMANTU][Updater] Modul updater tidak tersedia:", autoUpdaterLoadError);
+    return null;
+  }
+}
+
+function resolveAssetPath(fileName) {
+  const resourcesPath = process.resourcesPath || "";
+  const candidates = [
+    resourcesPath ? path.join(resourcesPath, "public", fileName) : "",
+    path.join(__dirname, "..", "dist", "public", fileName),
+    path.join(__dirname, "..", "client", "public", fileName),
+    path.join(process.cwd(), "dist", "public", fileName),
+    path.join(process.cwd(), "client", "public", fileName),
+  ].filter(Boolean);
+
+  return candidates.find((candidate) => fs.existsSync(candidate)) || null;
+}
+
+const APP_ICON_ICO = resolveAssetPath("logo_aplikasi.ico");
+const APP_ICON_PNG = resolveAssetPath("logo_aplikasi.png") || APP_ICON_ICO;
 
 function emitUpdaterStatus(payload = {}) {
   if (mainWindow && !mainWindow.isDestroyed()) {
@@ -25,11 +65,16 @@ function emitUpdaterStatus(payload = {}) {
 function showSystemNotification(title, body) {
   try {
     const safeBody = (typeof body === "string" && body.trim()) ? body.trim() : "SIMANTU — Sistem Informasi Pengumuman Terpadu";
-    const notif = new Notification({
+    const notifOptions = {
       title,
       body: safeBody,
-      icon: path.join(__dirname, "..", "client", "public", "logo_aplikasi.png"),
-    });
+    };
+
+    if (APP_ICON_PNG) {
+      notifOptions.icon = APP_ICON_PNG;
+    }
+
+    const notif = new Notification(notifOptions);
 
     notif.on("click", () => {
       if (!mainWindow) return;
@@ -57,9 +102,16 @@ async function checkForUpdatesNow() {
     return { ok: false, message };
   }
 
+  const updater = getAutoUpdater();
+  if (!updater) {
+    const message = "Modul auto-update tidak tersedia di paket aplikasi.";
+    publishUpdaterStatus("disabled", message, { error: autoUpdaterLoadError || "module missing" });
+    return { ok: false, message };
+  }
+
   try {
     publishUpdaterStatus("checking", "Memeriksa pembaruan aplikasi...");
-    const result = await autoUpdater.checkForUpdates();
+    const result = await updater.checkForUpdates();
     return { ok: true, info: result?.updateInfo ?? null };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -69,10 +121,11 @@ async function checkForUpdatesNow() {
 }
 
 function installUpdateNow() {
-  if (!updateReadyToInstall) return false;
+  const updater = getAutoUpdater();
+  if (!updateReadyToInstall || !updater) return false;
 
   setImmediate(() => {
-    autoUpdater.quitAndInstall(false, true);
+    updater.quitAndInstall(false, true);
   });
 
   return true;
@@ -81,15 +134,23 @@ function installUpdateNow() {
 function setupAutoUpdater() {
   if (updaterInitialized || !app.isPackaged) return;
 
+  const updater = getAutoUpdater();
+  if (!updater) {
+    publishUpdaterStatus("disabled", "Modul auto-update tidak tersedia di paket aplikasi.", {
+      error: autoUpdaterLoadError || "module missing",
+    });
+    return;
+  }
+
   updaterInitialized = true;
 
-  autoUpdater.autoDownload = true;
-  autoUpdater.autoInstallOnAppQuit = true;
-  autoUpdater.allowPrerelease = false;
+  updater.autoDownload = true;
+  updater.autoInstallOnAppQuit = true;
+  updater.allowPrerelease = false;
 
-  // Optional override for staging/testing feed. In normal release flow, updater reads app-update.yml.
+  // Use production feed by default; env vars can override for staging/testing.
   if (GITHUB_OWNER && GITHUB_REPO) {
-    autoUpdater.setFeedURL({
+    updater.setFeedURL({
       provider: "github",
       owner: GITHUB_OWNER,
       repo: GITHUB_REPO,
@@ -98,11 +159,11 @@ function setupAutoUpdater() {
     });
   }
 
-  autoUpdater.on("checking-for-update", () => {
+  updater.on("checking-for-update", () => {
     publishUpdaterStatus("checking", "Memeriksa pembaruan aplikasi...");
   });
 
-  autoUpdater.on("update-available", (info) => {
+  updater.on("update-available", (info) => {
     const versionText = info?.version ? `v${info.version}` : "versi terbaru";
     publishUpdaterStatus("available", `Pembaruan ${versionText} ditemukan. Mengunduh di latar belakang...`, {
       version: info?.version,
@@ -110,11 +171,11 @@ function setupAutoUpdater() {
     showSystemNotification("Update SIMANTU tersedia", `Versi ${versionText} sedang diunduh otomatis.`);
   });
 
-  autoUpdater.on("update-not-available", () => {
+  updater.on("update-not-available", () => {
     publishUpdaterStatus("not-available", "Aplikasi sudah menggunakan versi terbaru.");
   });
 
-  autoUpdater.on("download-progress", (progress) => {
+  updater.on("download-progress", (progress) => {
     const percent = Math.round(progress?.percent ?? 0);
     publishUpdaterStatus("downloading", `Mengunduh pembaruan ${percent}%`, {
       percent,
@@ -124,7 +185,7 @@ function setupAutoUpdater() {
     });
   });
 
-  autoUpdater.on("update-downloaded", async (info) => {
+  updater.on("update-downloaded", async (info) => {
     updateReadyToInstall = true;
     const versionText = info?.version ? `v${info.version}` : "versi terbaru";
 
@@ -150,7 +211,7 @@ function setupAutoUpdater() {
     }
   });
 
-  autoUpdater.on("error", (error) => {
+  updater.on("error", (error) => {
     const message = error instanceof Error ? error.message : String(error);
     publishUpdaterStatus("error", `Updater mengalami kendala: ${message}`, { error: message });
   });
@@ -255,7 +316,7 @@ function createWindow(url) {
     autoHideMenuBar: true,
     fullscreen: true,
     frame: false,
-    icon: path.join(__dirname, "..", "client", "public", "logo_aplikasi.ico"),
+    icon: APP_ICON_ICO || undefined,
     title: "SIMANTU - Sistem Informasi Pengumuman Terpadu",
     webPreferences: {
       nodeIntegration: false,
@@ -264,35 +325,54 @@ function createWindow(url) {
     },
   });
 
-  mainWindow.loadURL(url).catch(() => {
-    mainWindow.loadURL(getErrorPage(url));
+  const windowRef = mainWindow;
+
+  const safelyLoadUrl = (targetUrl) => {
+    if (windowRef.isDestroyed()) return;
+
+    try {
+      const loadPromise = windowRef.loadURL(targetUrl);
+      if (loadPromise && typeof loadPromise.catch === "function") {
+        loadPromise.catch(() => {
+          // Ignore navigation errors while window is being torn down.
+        });
+      }
+    } catch {
+      // Ignore sync loadURL errors (e.g., if window is destroyed mid-call).
+    }
+  };
+
+  windowRef.loadURL(url).catch(() => {
+    safelyLoadUrl(getErrorPage(url));
   });
 
-  mainWindow.webContents.on("did-fail-load", (_event, _code, _desc, failedUrl) => {
+  windowRef.webContents.on("did-fail-load", (_event, _code, _desc, failedUrl) => {
     if (failedUrl && !failedUrl.startsWith("data:")) {
-      mainWindow.loadURL(getErrorPage(url));
+      safelyLoadUrl(getErrorPage(url));
     }
   });
 
-  mainWindow.once("ready-to-show", () => {
-    mainWindow.show();
-    mainWindow.setFullScreen(true);
+  windowRef.once("ready-to-show", () => {
+    windowRef.show();
+    windowRef.setFullScreen(true);
   });
 
-  mainWindow.on("close", (e) => {
+  windowRef.on("close", (e) => {
     if (!isQuitting) {
       e.preventDefault();
-      mainWindow.hide();
+      if (!windowRef.isDestroyed()) {
+        windowRef.hide();
+      }
     }
   });
 
-  mainWindow.on("hide", () => {
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send("window-hidden");
+  windowRef.on("hide", () => {
+    if (!windowRef.isDestroyed()) {
+      windowRef.webContents.send("window-hidden");
     }
   });
 
-  mainWindow.on("closed", () => {
+  windowRef.on("closed", () => {
     mainWindow = null;
   });
 }
@@ -343,54 +423,68 @@ ipcMain.handle("app-update-install", async () => {
 app.whenReady().then(async () => {
   const isDev = !app.isPackaged;
 
-  const trayIconPath = path.join(__dirname, "..", "client", "public", "logo_aplikasi.ico");
-  tray = new Tray(trayIconPath);
-  tray.setToolTip("SIMANTU - Sistem Informasi Pengumuman Terpadu UGM");
-  const trayMenu = Menu.buildFromTemplate([
-    {
-      label: "Buka SIMANTU",
-      click: () => {
-        if (mainWindow) {
-          mainWindow.show();
-          mainWindow.setFullScreen(true);
-        }
+  const trayIconPath = APP_ICON_ICO || APP_ICON_PNG;
+  if (trayIconPath) {
+    tray = new Tray(trayIconPath);
+    tray.setToolTip("SIMANTU - Sistem Informasi Pengumuman Terpadu UGM");
+    const trayMenu = Menu.buildFromTemplate([
+      {
+        label: "Buka SIMANTU",
+        click: () => {
+          if (mainWindow) {
+            mainWindow.show();
+            mainWindow.setFullScreen(true);
+          }
+        },
       },
-    },
-    {
-      label: "Periksa Pembaruan",
-      click: () => {
-        void checkForUpdatesNow();
+      {
+        label: "Periksa Pembaruan",
+        click: () => {
+          void checkForUpdatesNow();
+        },
       },
-    },
-    { type: "separator" },
-    {
-      label: "Keluar",
-      click: () => {
-        isQuitting = true;
-        app.quit();
+      { type: "separator" },
+      {
+        label: "Keluar",
+        click: () => {
+          isQuitting = true;
+          app.quit();
+        },
       },
-    },
-  ]);
-  tray.setContextMenu(trayMenu);
-  tray.on("double-click", () => {
-    if (mainWindow) {
-      mainWindow.show();
-      mainWindow.setFullScreen(true);
-    }
-  });
+    ]);
+    tray.setContextMenu(trayMenu);
+    tray.on("double-click", () => {
+      if (mainWindow) {
+        mainWindow.show();
+        mainWindow.setFullScreen(true);
+      }
+    });
+  } else {
+    console.warn("[SIMANTU] Tray icon tidak ditemukan, tray dinonaktifkan.");
+  }
 
   if (isDev) {
     createWindow("http://localhost:5000");
   } else {
-    // Production: set data directory and start embedded server
-    process.env.SIMANTU_DATA_DIR = app.getPath("userData");
-    process.env.NODE_ENV = "production";
+    try {
+      // Production: set data directory and start embedded server
+      process.env.SIMANTU_DATA_DIR = app.getPath("userData");
+      process.env.NODE_ENV = "production";
+      process.env.SIMANTU_EMBEDDED_ELECTRON = "1";
 
-    const serverEntry = path.join(__dirname, "..", "dist-electron", "server.js");
-    const { startServer } = require(serverEntry);
-    const port = await startServer();
-    createWindow(`http://localhost:${port}`);
-    setupAutoUpdater();
+      const serverEntry = path.join(__dirname, "..", "dist-electron", "server.cjs");
+      const { startServer } = require(serverEntry);
+      const port = await startServer();
+      createWindow(`http://localhost:${port}`);
+      setupAutoUpdater();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      dialog.showErrorBox(
+        "SIMANTU gagal dijalankan",
+        `Backend lokal tidak dapat dimulai.\n\n${message}`,
+      );
+      app.quit();
+    }
   }
 });
 
@@ -402,4 +496,16 @@ app.on("activate", () => {
   if (BrowserWindow.getAllWindows().length === 0) {
     createWindow("http://localhost:5000");
   }
+});
+
+app.on("second-instance", () => {
+  if (!mainWindow) return;
+
+  if (mainWindow.isMinimized()) {
+    mainWindow.restore();
+  }
+
+  mainWindow.show();
+  mainWindow.focus();
+  mainWindow.setFullScreen(true);
 });

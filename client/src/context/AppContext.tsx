@@ -73,6 +73,41 @@ export interface PendingScheduledPlayback {
   recurring: boolean;
 }
 
+type ScheduleNotificationStage = "five-min" | "one-min" | "start";
+
+function getScheduleNotificationKey(scheduleId: number, playTime: string): string {
+  return `${scheduleId}:${playTime}`;
+}
+
+function hasScheduleNotificationStage(
+  notificationStore: Map<string, Set<ScheduleNotificationStage>>,
+  key: string,
+  stage: ScheduleNotificationStage,
+): boolean {
+  return notificationStore.get(key)?.has(stage) ?? false;
+}
+
+function markScheduleNotificationStage(
+  notificationStore: Map<string, Set<ScheduleNotificationStage>>,
+  key: string,
+  stage: ScheduleNotificationStage,
+): void {
+  const existingStages = notificationStore.get(key) ?? new Set<ScheduleNotificationStage>();
+  existingStages.add(stage);
+  notificationStore.set(key, existingStages);
+}
+
+function pruneScheduleNotificationStore(
+  notificationStore: Map<string, Set<ScheduleNotificationStage>>,
+  activeKeys: Set<string>,
+): void {
+  notificationStore.forEach((_value, key) => {
+    if (!activeKeys.has(key)) {
+      notificationStore.delete(key);
+    }
+  });
+}
+
 interface AppContextType {
   textId: string;
   setTextId: (text: string) => void;
@@ -301,7 +336,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const queuePlayTimeoutRef = useRef<number | null>(null);
   const schedulerCheckInFlightRef = useRef(false);
   const schedulerProcessingIdsRef = useRef<Set<number>>(new Set());
-  const notifiedUpcoming = useRef<Set<number>>(new Set());
+  const scheduleNotificationStagesRef = useRef<Map<string, Set<ScheduleNotificationStage>>>(new Map());
   const deferredScheduleIdRef = useRef<number | null>(null);
   const [announcementQueue, setAnnouncementQueueRaw] = useState<QueueItem[]>([]);
   const announcementQueueRef = useRef<QueueItem[]>([]);
@@ -676,10 +711,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setAnalyserNode(getAnalyserNode());
     setIsPreparing(false);
     setIsPlaying(true);
-
-    // System notification: announcement is now playing
-    const previewText = (id || en).slice(0, 80) + ((id || en).length > 80 ? '...' : '');
-    sendNotification('🔊 Pengumuman Sedang Berlangsung', previewText, '🔊', 6000);
     try {
       if (bellEnabled && isSessionActive()) {
         const opening = await getBellFromLibrary(bellLibrary, activeBellOpeningId, "/Opening.mp3");
@@ -873,22 +904,81 @@ export function AppProvider({ children }: { children: ReactNode }) {
         const announcements = await announcementsRes.json();
         const now = new Date();
 
-        const TWO_MIN = 2 * 60 * 1000;
+        const FIVE_MIN = 5 * 60 * 1000;
+        const ONE_MIN = 1 * 60 * 1000;
         const GRACE_MS = 5 * 60 * 1000; // skip schedules missed by >5 minutes
 
+        const activeScheduleNotificationKeys = new Set<string>();
         for (const schedule of schedules) {
-          // Upcoming notification: 2 minutes before playback
-          if (schedule.status === "Waiting" && !notifiedUpcoming.current.has(schedule.id)) {
-            const msUntil = new Date(schedule.playTime).getTime() - now.getTime();
-            if (msUntil > 0 && msUntil <= TWO_MIN) {
-              const ann = announcements.find((a: any) => a.id === schedule.announcementId);
-              const label = ann ? (ann.contentId || ann.contentEn).slice(0, 60) : 'Pengumuman terjadwal';
-              sendNotification('⏰ Pengumuman Akan Segera Dimulai', label, '⏰', 7000);
-              notifiedUpcoming.current.add(schedule.id);
+          if (schedule.status === "Waiting" || schedule.status === "Playing") {
+            activeScheduleNotificationKeys.add(
+              getScheduleNotificationKey(schedule.id, String(schedule.playTime)),
+            );
+          }
+        }
+        pruneScheduleNotificationStore(
+          scheduleNotificationStagesRef.current,
+          activeScheduleNotificationKeys,
+        );
+
+        for (const schedule of schedules) {
+          const scheduleNotificationKey = getScheduleNotificationKey(
+            schedule.id,
+            String(schedule.playTime),
+          );
+          const msUntil = new Date(schedule.playTime).getTime() - now.getTime();
+
+          if (schedule.status === "Waiting" && msUntil > 0) {
+            if (
+              msUntil <= FIVE_MIN &&
+              msUntil > ONE_MIN &&
+              !hasScheduleNotificationStage(
+                scheduleNotificationStagesRef.current,
+                scheduleNotificationKey,
+                "five-min",
+              )
+            ) {
+              sendNotification("⏰ Pengingat Pengumuman", "Kurang 5 menit.", "⏰", 5000);
+              markScheduleNotificationStage(
+                scheduleNotificationStagesRef.current,
+                scheduleNotificationKey,
+                "five-min",
+              );
+            }
+
+            if (
+              msUntil <= ONE_MIN &&
+              !hasScheduleNotificationStage(
+                scheduleNotificationStagesRef.current,
+                scheduleNotificationKey,
+                "one-min",
+              )
+            ) {
+              sendNotification("⏰ Pengingat Pengumuman", "Kurang 1 menit.", "⏰", 5000);
+              markScheduleNotificationStage(
+                scheduleNotificationStagesRef.current,
+                scheduleNotificationKey,
+                "one-min",
+              );
             }
           }
 
           if (schedule.status === "Waiting" && new Date(schedule.playTime) <= now) {
+            if (
+              !hasScheduleNotificationStage(
+                scheduleNotificationStagesRef.current,
+                scheduleNotificationKey,
+                "start",
+              )
+            ) {
+              sendNotification("⏰ Pengingat Pengumuman", "Pengumuman akan dimulai.", "⏰", 6000);
+              markScheduleNotificationStage(
+                scheduleNotificationStagesRef.current,
+                scheduleNotificationKey,
+                "start",
+              );
+            }
+
             if (schedule.id === deferredScheduleIdRef.current) {
               if (pendingScheduledPlaybackRef.current?.scheduleId !== schedule.id) {
                 const ann = announcements.find((a: any) => a.id === schedule.announcementId);

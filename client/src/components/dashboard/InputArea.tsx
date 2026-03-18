@@ -236,21 +236,21 @@ export function InputArea() {
         {/* Hint spanning both columns */}
         <div className="mt-1.5 px-1 flex items-start gap-1.5 text-[11px] text-gray-400">
           <Info className="w-3 h-3 shrink-0 mt-0.5" />
-          <span>
+          <span className="break-words">
             Singkatan <span className="font-semibold tracking-wide">KAPITAL</span> (UGM, WIB, ETD) dieja otomatis. Untuk kata Inggris di kolom ID, gunakan <code className="bg-gray-100 px-1 rounded">[en: kata]</code>.
             Untuk sisipan Indonesia di kolom EN, gunakan <code className="bg-gray-100 px-1 rounded">[id: kata]</code>.
           </span>
         </div>
 
-        <div className="flex flex-col sm:flex-row items-center justify-between mt-5 pt-5 border-t border-gray-100 gap-4">
-          <div className="flex items-center gap-4 w-full sm:w-auto flex-wrap">
+        <div className="mt-5 flex flex-col gap-4 border-t border-gray-100 pt-5 2xl:flex-row 2xl:items-center 2xl:justify-between">
+          <div className="flex flex-row flex-wrap w-full gap-3 2xl:w-auto 2xl:flex 2xl:flex-wrap 2xl:items-center 2xl:gap-4">
             <div className="flex items-center gap-2">
               <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">ID:</span>
-              <div className="flex bg-gray-100 rounded-lg p-0.5 gap-0.5">
+              <div className="grid grid-cols-2 gap-0.5 rounded-lg bg-gray-100 p-0.5">
                 {["Pria", "Wanita"].map((v) => (
                   <label
                     key={v}
-                    className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all duration-300 cursor-pointer ${
+                    className={`px-2.5 py-1.5 rounded-md text-xs font-bold transition-all duration-300 cursor-pointer sm:px-3 ${
                       voice === v
                         ? 'bg-[#004175] text-white shadow-sm'
                         : 'text-gray-500 hover:text-gray-700 hover:bg-gray-200/60'
@@ -272,11 +272,11 @@ export function InputArea() {
             </div>
             <div className="flex items-center gap-2">
               <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">EN:</span>
-              <div className="flex bg-gray-100 rounded-lg p-0.5 gap-0.5">
+              <div className="grid grid-cols-2 gap-0.5 rounded-lg bg-gray-100 p-0.5">
                 {["Pria", "Wanita"].map((v) => (
                   <label
                     key={v}
-                    className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all duration-300 cursor-pointer ${
+                    className={`px-2.5 py-1.5 rounded-md text-xs font-bold transition-all duration-300 cursor-pointer sm:px-3 ${
                       voiceEn === v
                         ? 'bg-[#004175] text-white shadow-sm'
                         : 'text-gray-500 hover:text-gray-700 hover:bg-gray-200/60'
@@ -298,40 +298,47 @@ export function InputArea() {
             </div>
           </div>
 
-          <div className="flex w-full sm:w-auto flex-wrap sm:flex-nowrap items-center gap-3">
-            {alreadySaved ? (
-              <div className="flex-1 sm:flex-none flex items-center justify-center gap-2 px-6 py-3 rounded-xl font-semibold bg-green-50 text-green-700 border border-green-200 cursor-default">
-                <CheckCircle2 className="w-5 h-5" />
-                Tersimpan
-              </div>
-            ) : (
-              <button
-                onClick={() => setIsSaveModalOpen(true)}
-                disabled={controlsLocked || (!textId.trim() && !textEn.trim())}
-                className="flex-1 sm:flex-none flex items-center justify-center gap-2 px-6 py-3 rounded-xl font-semibold bg-[#F9BB00]/10 text-[#bd8e00] hover:bg-[#F9BB00]/20 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-              >
-                <Bookmark className="w-5 h-5" />
-                Save to Library
-              </button>
-            )}
-            {playbackBusy ? (
-              <button
-                onClick={stopAudio}
-                className="flex-1 sm:flex-none flex items-center justify-center gap-2 px-8 py-3 rounded-xl font-semibold bg-gradient-to-r from-red-600 to-red-700 text-white shadow-lg shadow-red-600/30 hover:shadow-xl hover:-translate-y-0.5 active:translate-y-0 transition-all duration-300"
-              >
-                <Square className="w-5 h-5 fill-current" />
-                Stop
-              </button>
-            ) : (
-              <button
-                onClick={() => void handlePlayRequest()}
-                disabled={controlsLocked || (!textId.trim() && !textEn.trim())}
-                className="flex-1 sm:flex-none flex items-center justify-center gap-2 px-8 py-3 rounded-xl font-semibold bg-gradient-to-r from-[#004175] to-[#002a4d] text-white shadow-lg shadow-[#004175]/30 hover:shadow-xl hover:-translate-y-0.5 active:translate-y-0 disabled:opacity-50 disabled:transform-none disabled:cursor-not-allowed transition-all duration-300"
-              >
-                <Play className="w-5 h-5 fill-current" />
-                Play Now
-              </button>
-            )}
+          <div className="flex flex-col gap-2 w-full min-w-0 2xl:ml-auto 2xl:max-w-[320px] sm:flex-row sm:gap-3">
+            {/* Save to Library Button */}
+            <div className="flex-1">
+              {alreadySaved ? (
+                <div className="flex w-full min-w-0 items-center justify-center gap-2 rounded-xl border border-green-200 bg-green-50 px-6 py-3 text-sm font-semibold text-green-700 text-center">
+                  <CheckCircle2 className="w-5 h-5" />
+                  Tersimpan
+                </div>
+              ) : (
+                <button
+                  onClick={() => setIsSaveModalOpen(true)}
+                  disabled={controlsLocked || (!textId.trim() && !textEn.trim())}
+                  className="flex w-full min-w-0 items-center justify-center gap-2 rounded-xl bg-[#F9BB00]/10 px-6 py-3 text-sm font-semibold text-[#bd8e00] text-center transition-colors hover:bg-[#F9BB00]/20 disabled:cursor-not-allowed disabled:opacity-50 whitespace-nowrap overflow-hidden"
+                >
+                  <Bookmark className="w-5 h-5" />
+                  <span className="whitespace-nowrap">Save to Library</span>
+                </button>
+              )}
+            </div>
+
+            {/* Play Button */}
+            <div className="flex-1">
+              {playbackBusy ? (
+                <button
+                  onClick={stopAudio}
+                  className="flex w-full min-w-0 items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-red-600 to-red-700 px-6 py-3 text-sm font-semibold text-white text-center shadow-lg shadow-red-600/30 transition-all duration-300 hover:-translate-y-0.5 hover:shadow-xl active:translate-y-0"
+                >
+                  <Square className="w-5 h-5 fill-current" />
+                  Stop
+                </button>
+              ) : (
+                <button
+                  onClick={() => void handlePlayRequest()}
+                  disabled={controlsLocked || (!textId.trim() && !textEn.trim())}
+                  className="flex w-full min-w-0 items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#004175] to-[#002a4d] px-6 py-3 text-sm font-semibold text-white text-center shadow-lg shadow-[#004175]/30 transition-all duration-300 hover:-translate-y-0.5 hover:shadow-xl active:translate-y-0 disabled:cursor-not-allowed disabled:opacity-50 disabled:transform-none"
+                >
+                  <Play className="w-5 h-5 fill-current" />
+                  <span className="whitespace-nowrap">Play Now</span>
+                </button>
+              )}
+            </div>
           </div>
         </div>
       </div>

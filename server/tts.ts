@@ -1,10 +1,31 @@
 import { MsEdgeTTS, OUTPUT_FORMAT } from "msedge-tts";
 import { spawnSync } from "child_process";
-import { createRequire } from "module";
+import fs from "fs";
+import path from "path";
+import ffmpegStatic from "ffmpeg-static";
 
-// Use createRequire to load CJS module reliably (avoids ESM default-export interop issues)
-const _require = createRequire(import.meta.url);
-const ffmpegBin: string = _require("ffmpeg-static");
+function resolveFfmpegPath(): string {
+  const binaryName = process.platform === "win32" ? "ffmpeg.exe" : "ffmpeg";
+  const resourcesPath = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath || "";
+
+  const candidates = [
+    String(ffmpegStatic),
+    process.env.FFMPEG_PATH || "",
+    resourcesPath
+      ? path.resolve(resourcesPath, "app.asar.unpacked", "node_modules", "ffmpeg-static", binaryName)
+      : "",
+    path.resolve(process.cwd(), "node_modules", "ffmpeg-static", binaryName),
+  ].filter(Boolean);
+
+  const found = candidates.find((candidate) => fs.existsSync(candidate));
+  if (found) {
+    return found;
+  }
+
+  throw new Error(`ffmpeg binary not found. Checked: ${candidates.join(", ")}`);
+}
+
+const ffmpegBin = resolveFfmpegPath();
 
 export const VOICE_PRESETS: Record<string, { id: string; en: string }> = {
   "Gadis & Jenny - Friendly": { id: "id-ID-GadisNeural", en: "en-US-JennyNeural" },

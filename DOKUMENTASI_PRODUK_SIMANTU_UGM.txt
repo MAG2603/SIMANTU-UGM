@@ -586,10 +586,10 @@ Prasyarat sekali-pakai sebelum rilis pertama:
 3. Pastikan package.json build.publish dikonfigurasi:
    {
      "provider": "github",
-     "owner": "<SIMANTU_GITHUB_OWNER>",
-     "repo":  "<SIMANTU_GITHUB_REPO>"
+     "owner": "MAG2603",
+     "repo":  "SIMANTU-UGM"
    }
-4. Set environment variable sebelum menjalankan release:
+4. Opsional (hanya jika ingin override ke repo lain saat testing):
    set SIMANTU_GITHUB_OWNER=<username-atau-org>
    set SIMANTU_GITHUB_REPO=<nama-repo>
    set GH_TOKEN=<personal-access-token>
@@ -600,7 +600,7 @@ Langkah-langkah setiap kali ingin merilis pembaruan:
 1. Perbarui versi di package.json:
    "version": "X.Y.Z"
 
-2. Pastikan env var sudah di-set (lihat 17A.4).
+2. Pastikan GH_TOKEN sudah di-set. Env owner/repo hanya diperlukan jika override feed (lihat 17A.4).
 
 3. Jalankan:
    npm run release:win
