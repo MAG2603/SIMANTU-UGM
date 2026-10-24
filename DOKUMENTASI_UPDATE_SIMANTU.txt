@@ -1,0 +1,23 @@
+# Cara Update SIMANTU-UGM (Electron)
+
+1. Pastikan versi aplikasi sudah dinaikkan di package.json (misal: 1.0.5).
+2. Jalankan build dan publish otomatis:
+   npm run publish
+   - Script ini akan build aplikasi, generate installer, dan upload ke GitHub Releases.
+   - Tag versi baru akan dibuat otomatis.
+   - File installer (.exe), latest.yml, dan blockmap akan di-upload ke Releases.
+3. Pastikan user aplikasi SIMANTU-UGM sudah terhubung ke endpoint update GitHub.
+   - User akan otomatis mendapatkan update saat aplikasi dijalankan.
+
+## Catatan
+- Tidak perlu buka browser atau upload manual ke GitHub.
+- Pastikan script publish ada di package.json:
+  "publish": "npm run prebuild:images && npm run build && electron-builder --win --publish always"
+- Jika ingin update manual, upload file installer dan latest.yml ke GitHub Releases.
+
+## Troubleshooting
+- Jika update tidak terdeteksi, cek versi di package.json dan latest.yml.
+- Pastikan tag dan release di GitHub sesuai versi aplikasi.
+- Pastikan endpoint update di Electron benar.
+
+Disimpan oleh GitHub Copilot, 2026.

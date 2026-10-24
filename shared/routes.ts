@@ -79,6 +79,13 @@ export const api = {
         409: z.object({ message: z.string() }),
       },
     },
+    missed: {
+      method: "GET" as const,
+      path: "/api/schedules/recovery/missed" as const,
+      responses: {
+        200: z.array(scheduleSchema),
+      },
+    },
     delete: {
       method: "DELETE" as const,
       path: "/api/schedules/:id" as const,
@@ -96,6 +103,21 @@ export const api = {
     voices: {
       method: "GET" as const,
       path: "/api/tts/voices" as const,
+    },
+  },
+  translate: {
+    post: {
+      method: "POST" as const,
+      path: "/api/translate" as const,
+      input: z.object({
+        text: z.string(),
+        from: z.string().default("id"),
+        to: z.string().default("en"),
+      }),
+      responses: {
+        200: z.object({ translatedText: z.string() }),
+        400: errorSchemas.validation,
+      },
     },
   },
   status: {

@@ -11,4 +11,5 @@ contextBridge.exposeInMainWorld("electronAPI", {
   installUpdateNow: () => ipcRenderer.invoke("app-update-install"),
   onUpdateStatus: (cb) => ipcRenderer.on("app-update-status", cb),
   offUpdateStatus: (cb) => ipcRenderer.removeListener("app-update-status", cb),
+  fetchMissedSchedules: (serverUrl) => ipcRenderer.invoke("fetch-missed-schedules", serverUrl),
 });

@@ -91,7 +91,7 @@ function getErrorPage(serverUrl) {
       <span id="statusText">Mencoba menghubungkan kembali...</span>
     </div>
     <button class="retry-btn" onclick="tryReconnect()">Coba Lagi</button>
-    <div class="footer">SIMANTU &mdash; Sistem Informasi Pengumuman Terpadu UGM</div>
+    <div class="footer">SIMANTU &mdash; Perpustakaan dan Arsip UGM</div>
   </div>
   <script>
     const serverUrl = "${serverUrl}";
@@ -222,6 +222,32 @@ ipcMain.on("show-notification", (_event, opts) => {
     showCustomNotification(opts);
   } catch (err) {
     console.error('[SIMANTU] Notification error:', err);
+  }
+});
+
+// CRITICAL: Handle missed schedules on app startup
+ipcMain.handle("fetch-missed-schedules", async (event, serverUrl) => {
+  try {
+    const res = await fetch(`${serverUrl}/api/schedules/recovery/missed`, { 
+      signal: AbortSignal.timeout(5000) 
+    });
+    if (res.ok) {
+      const missedSchedules = await res.json();
+      if (missedSchedules && missedSchedules.length > 0) {
+        console.log(`[SIMANTU] Found ${missedSchedules.length} missed schedule(s) to recover`);
+        // Show notification to user
+        showCustomNotification({
+          title: '⏰ Jadwal Terlewat',
+          body: `Ditemukan ${missedSchedules.length} pengumuman yang perlu diputar. Silakan periksa scheduler.`,
+          duration: 8000
+        });
+        return missedSchedules;
+      }
+    }
+    return [];
+  } catch (err) {
+    console.warn('[SIMANTU] Error fetching missed schedules:', err);
+    return [];
   }
 });
 

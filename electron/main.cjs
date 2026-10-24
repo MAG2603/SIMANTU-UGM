@@ -2,6 +2,11 @@ const { app, BrowserWindow, ipcMain, Notification, Tray, Menu, dialog } = requir
 const fs = require("fs");
 const path = require("path");
 
+process.on("uncaughtException", (err) => {
+  if (err.code === "EPIPE") return; // Prevent crashes when writing to broken stdout pipe in packaged app
+  console.error("Uncaught Exception:", err);
+});
+
 app.setName("SIMANTU");
 app.setAppUserModelId("com.ugm.simantu");
 
@@ -285,7 +290,7 @@ function getErrorPage(serverUrl) {
       <span id="statusText">Mencoba menghubungkan kembali...</span>
     </div>
     <button class="retry-btn" onclick="tryReconnect()">Coba Lagi</button>
-    <div class="footer">SIMANTU &mdash; Sistem Informasi Pengumuman Terpadu UGM</div>
+    <div class="footer">SIMANTU &mdash; Perpustakaan dan Arsip UGM</div>
   </div>
   <script>
     const serverUrl = "${serverUrl}";
@@ -405,6 +410,34 @@ ipcMain.on("show-notification", (_event, payload, bodyFallback) => {
   // ignore malformed payloads silently
 });
 
+// Missed schedule recovery bridge for renderer startup check
+ipcMain.handle("fetch-missed-schedules", async (_event, serverUrl) => {
+  try {
+    const safeUrl = String(serverUrl || "").replace(/\/$/, "");
+    if (!safeUrl) return [];
+
+    const res = await fetch(`${safeUrl}/api/schedules/recovery/missed`, {
+      signal: AbortSignal.timeout(5000),
+    });
+
+    if (!res.ok) return [];
+
+    const missedSchedules = await res.json();
+    if (Array.isArray(missedSchedules) && missedSchedules.length > 0) {
+      showSystemNotification(
+        "Jadwal Terlewat",
+        `Ditemukan ${missedSchedules.length} pengumuman yang perlu diputar.`,
+      );
+      return missedSchedules;
+    }
+
+    return [];
+  } catch (error) {
+    console.warn("[SIMANTU] Error fetching missed schedules:", error);
+    return [];
+  }
+});
+
 ipcMain.handle("app-update-check", async () => {
   return checkForUpdatesNow();
 });
@@ -426,7 +459,7 @@ app.whenReady().then(async () => {
   const trayIconPath = APP_ICON_ICO || APP_ICON_PNG;
   if (trayIconPath) {
     tray = new Tray(trayIconPath);
-    tray.setToolTip("SIMANTU - Sistem Informasi Pengumuman Terpadu UGM");
+    tray.setToolTip("SIMANTU - Perpustakaan dan Arsip UGM");
     const trayMenu = Menu.buildFromTemplate([
       {
         label: "Buka SIMANTU",

@@ -99,34 +99,34 @@ export function RightPanel() {
       {/* Antrian Pengumuman */}
       {announcementQueue.length > 0 && (
         <div className="px-4 pb-3 shrink-0">
-          <div className="bg-indigo-50 border border-indigo-100 rounded-2xl overflow-hidden">
-            <div className="flex items-center justify-between px-3 py-2 bg-indigo-100/50">
+          <div className="bg-blue-50/70 border border-blue-100 rounded-2xl overflow-hidden shadow-xs">
+            <div className="flex items-center justify-between px-3 py-2 bg-[#004175]/10 border-b border-blue-100/60">
               <div className="flex items-center gap-1.5">
-                <ListOrdered className="w-3.5 h-3.5 text-indigo-600" />
-                <span className="text-[10px] font-black text-indigo-700 uppercase tracking-wider">Antrian</span>
-                <span className="text-[9px] font-bold text-white bg-indigo-500 px-1.5 py-0.5 rounded-full">{announcementQueue.length}</span>
+                <ListOrdered className="w-3.5 h-3.5 text-[#004175]" />
+                <span className="text-[10px] font-black text-[#004175] uppercase tracking-wider">Antrian</span>
+                <span className="text-[9px] font-bold text-white bg-[#004175] px-1.5 py-0.5 rounded-full">{announcementQueue.length}</span>
               </div>
               <button
                 onClick={clearQueue}
                 disabled={isPreparing}
                 title="Bersihkan antrian"
-                className="p-1 hover:bg-indigo-200 rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                className="p-1 hover:bg-white rounded-lg transition-colors text-gray-400 hover:text-red-500 disabled:opacity-40 disabled:cursor-not-allowed"
               >
-                <Trash2 className="w-3 h-3 text-indigo-400" />
+                <Trash2 className="w-3 h-3" />
               </button>
             </div>
-            <div className="divide-y divide-indigo-100 max-h-[160px] overflow-y-auto styled-scrollbar">
+            <div className="divide-y divide-blue-100/60 max-h-[160px] overflow-y-auto styled-scrollbar">
               {announcementQueue.map((item, idx) => (
-                <div key={item.id} className="flex items-center gap-2 px-3 py-2">
-                  <span className="text-[9px] font-black text-indigo-400 w-4 shrink-0">{idx + 1}</span>
-                  <p className="flex-1 text-[10px] font-medium text-indigo-800 truncate">{item.label}</p>
+                <div key={item.id} className="flex items-center gap-2 px-3 py-2 bg-white/50 hover:bg-white transition-colors">
+                  <span className="text-[9px] font-black text-[#004175]/60 w-4 shrink-0">{idx + 1}</span>
+                  <p className="flex-1 text-[10px] font-semibold text-[#004175] truncate">{item.label}</p>
                   <button
                     onClick={() => removeFromQueue(item.id)}
                     disabled={isPreparing}
                     title="Hapus dari antrian"
-                    className="p-0.5 hover:bg-indigo-200 rounded transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                    className="p-0.5 hover:bg-red-50 rounded transition-colors text-gray-400 hover:text-red-500 disabled:opacity-40 disabled:cursor-not-allowed"
                   >
-                    <X className="w-3 h-3 text-indigo-300 hover:text-indigo-500" />
+                    <X className="w-3 h-3" />
                   </button>
                 </div>
               ))}

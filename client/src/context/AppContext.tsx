@@ -1,6 +1,7 @@
 import { createContext, useContext, useState, useRef, useCallback, useEffect, ReactNode } from "react";
 import { queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { MusicTrack, getAllMusicTracks, saveMusicTrack, deleteMusicTrack, getMusicTrack, processAudioFile } from "@/lib/musicStorage";
 
 const VOICE_PRESETS: Record<string, { id: string; en: string }> = {
   "Pria": { id: "id-ID-ArdiNeural", en: "en-US-AndrewMultilingualNeural" },
@@ -21,6 +22,8 @@ const DEFAULT_SPELLING_RULES: SpellingRule[] = [
   { id: "default-l5", from: "L5", to: "L Lima", enabled: true, lang: "id" },
   { id: "default-etd", from: "ETD", to: "E T D", enabled: true, lang: "id" },
   { id: "default-wib", from: "WIB", to: "Waktu Indonesia Barat", enabled: true, lang: "id" },
+  { id: "default-amp-id", from: "&", to: "dan", enabled: true, lang: "id" },
+  { id: "default-amp-en", from: "&", to: "and", enabled: true, lang: "en" },
 ];
 
 function normalizeSpellingRules(rules: SpellingRule[]): SpellingRule[] {
@@ -73,6 +76,50 @@ export interface PendingScheduledPlayback {
   recurring: boolean;
 }
 
+export interface DailyPlaybackLog {
+  id: string;
+  scheduleId?: number;
+  announcementId?: number;
+  title: string;
+  playedAt: string; // ISO string
+  recurring?: boolean;
+  daysOfWeek?: number[];
+}
+
+export function getDailyPlaybackLogs(): DailyPlaybackLog[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = localStorage.getItem("simantu_daily_playback_logs");
+    if (!raw) return [];
+    const parsed: DailyPlaybackLog[] = JSON.parse(raw);
+    const now = new Date();
+    return parsed.filter(item => {
+      const d = new Date(item.playedAt);
+      return (
+        d.getFullYear() === now.getFullYear() &&
+        d.getMonth() === now.getMonth() &&
+        d.getDate() === now.getDate()
+      );
+    });
+  } catch (_) {
+    return [];
+  }
+}
+
+export function saveDailyPlaybackLog(entry: Omit<DailyPlaybackLog, "id">): DailyPlaybackLog {
+  const current = getDailyPlaybackLogs();
+  const newEntry: DailyPlaybackLog = {
+    ...entry,
+    id: `log-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+  };
+  const updated = [newEntry, ...current].slice(0, 100);
+  try {
+    localStorage.setItem("simantu_daily_playback_logs", JSON.stringify(updated));
+    window.dispatchEvent(new CustomEvent("simantu:playback-log-updated"));
+  } catch (_) {}
+  return newEntry;
+}
+
 type ScheduleNotificationStage = "five-min" | "one-min" | "start";
 
 function getScheduleNotificationKey(scheduleId: number, playTime: string): string {
@@ -106,6 +153,57 @@ function pruneScheduleNotificationStore(
       notificationStore.delete(key);
     }
   });
+}
+
+function getNextDailyOccurrenceIso(playTime: string, nowMs = Date.now()): string {
+  const nextPlay = new Date(playTime);
+  if (Number.isNaN(nextPlay.getTime())) {
+    return new Date(nowMs).toISOString();
+  }
+
+  while (nextPlay.getTime() <= nowMs) {
+    nextPlay.setDate(nextPlay.getDate() + 1);
+  }
+
+  return nextPlay.toISOString();
+}
+
+function normalizeScheduleDays(daysOfWeek?: number[]): number[] {
+  if (!Array.isArray(daysOfWeek)) return [];
+  return Array.from(new Set(daysOfWeek.filter((day) => Number.isInteger(day) && day >= 0 && day <= 6))).sort();
+}
+
+function getNextRecurringOccurrenceIso(
+  playTime: string,
+  daysOfWeek?: number[],
+  nowMs = Date.now(),
+): string {
+  const template = new Date(playTime);
+  if (Number.isNaN(template.getTime())) {
+    return new Date(nowMs).toISOString();
+  }
+
+  const activeDays = normalizeScheduleDays(daysOfWeek);
+  if (activeDays.length === 0) {
+    return getNextDailyOccurrenceIso(playTime, nowMs);
+  }
+
+  const candidate = new Date(nowMs);
+  candidate.setHours(
+    template.getHours(),
+    template.getMinutes(),
+    template.getSeconds(),
+    template.getMilliseconds(),
+  );
+
+  for (let i = 0; i < 14; i += 1) {
+    if (candidate.getTime() > nowMs && activeDays.includes(candidate.getDay())) {
+      return candidate.toISOString();
+    }
+    candidate.setDate(candidate.getDate() + 1);
+  }
+
+  return getNextDailyOccurrenceIso(playTime, nowMs);
 }
 
 interface AppContextType {
@@ -149,6 +247,39 @@ interface AppContextType {
   clearDeferredScheduledPlayback: () => void;
   confirmPendingScheduledPlayback: () => Promise<void>;
   skipPendingScheduledPlayback: () => Promise<void>;
+  autoTranslateEnabled: boolean;
+  setAutoTranslateEnabled: (v: boolean) => void;
+  ttsEngine: string;
+  setTtsEngine: (engine: string) => void;
+  geminiApiKey: string;
+  setGeminiApiKey: (key: string) => void;
+  activeScheduleId: number | null;
+  // Outro Music
+  musicTracks: MusicTrack[];
+  loadMusicTracks: () => Promise<void>;
+  addMusicTrack: (file: File) => Promise<MusicTrack>;
+  removeMusicTrack: (id: string) => Promise<void>;
+  isOutroPlaying: boolean;
+  currentOutro: {
+    id: string;
+    name: string;
+    scheduleTitle?: string;
+    startedAt: number;
+    durationMinutes?: number;
+    remainingSeconds: number;
+    totalRemainingSeconds?: number;
+    currentIndex?: number;
+    totalTracks?: number;
+    nextTrackName?: string;
+  } | null;
+  outroVolume: number;
+  setOutroVolume: (v: number) => void;
+  startOutroMusic: (trackIds: string | string[], durationMinutesOrTitle?: number | string, scheduleTitle?: string) => Promise<void>;
+  skipOutroTrack: () => void;
+  stopOutroMusic: () => void;
+  activeMusicPreviewId: string | null;
+  previewMusicTrack: (id: string) => void;
+  stopMusicPreview: () => void;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -275,7 +406,7 @@ async function getBellFromLibrary(library: BellItem[], activeId: string | null, 
 }
 
 function applySpellingRules(text: string, rules: SpellingRule[], lang: 'id' | 'en'): string {
-  let result = text;
+  let result = text.replace(/\s*&\s*/g, lang === 'en' ? " and " : " dan ");
   for (const rule of rules) {
     if (!rule.enabled || !rule.from.trim()) continue;
     if (rule.lang !== 'both' && rule.lang !== lang) continue;
@@ -290,19 +421,42 @@ function applySpellingRules(text: string, rules: SpellingRule[], lang: 'id' | 'e
 }
 
 // Synthesize TTS on server (returns MPEG1 L3 after transcoding), decode via Web Audio API.
-async function fetchTtsBuffer(text: string, voiceId: string): Promise<AudioBuffer> {
+async function fetchTtsBuffer(
+  text: string,
+  voiceId: string,
+  engine = "edge",
+  onFallback?: (reason: string) => void
+): Promise<AudioBuffer> {
   const ctx = getAudioContext();
   const res = await fetch("/api/tts", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ text, voice: voiceId }),
+    body: JSON.stringify({ text, voice: voiceId, engine }),
   });
-  if (!res.ok) throw new Error("TTS request failed: " + res.status);
+  if (!res.ok) {
+    let errMsg = `TTS request failed: ${res.status}`;
+    try {
+      const errData = await res.json();
+      if (errData?.message) errMsg = errData.message;
+    } catch {
+      // ignore
+    }
+    throw new Error(errMsg);
+  }
+  const fallbackHeader = res.headers.get("X-TTS-Fallback-Reason");
+  if (fallbackHeader && onFallback) {
+    try {
+      onFallback(decodeURIComponent(fallbackHeader));
+    } catch {
+      onFallback(fallbackHeader);
+    }
+  }
   const ab = await res.arrayBuffer();
   return ctx.decodeAudioData(ab);
 }
 
 export function AppProvider({ children }: { children: ReactNode }) {
+  const appBootTimeRef = useRef<number>(Date.now());
   // Refs keep the latest text/voice values readable inside useCallback without
   // needing to list them as deps — prevents playAudio from being recreated on
   // every keystroke (which would reset the scheduler's 30-second interval).
@@ -343,6 +497,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [pendingScheduledPlaybackRaw, setPendingScheduledPlaybackRaw] = useState<PendingScheduledPlayback | null>(null);
   const pendingScheduledPlaybackRef = useRef<PendingScheduledPlayback | null>(null);
   const { toast } = useToast();
+  const [activeScheduleId, setActiveScheduleId] = useState<number | null>(null);
 
   const setPendingScheduledPlayback = (value: PendingScheduledPlayback | null) => {
     pendingScheduledPlaybackRef.current = value;
@@ -383,6 +538,39 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const setSchedulerEnabled = useCallback((v: boolean) => {
     setSchedulerEnabledState(v);
     localStorage.setItem("simantu_scheduler_enabled", String(v));
+  }, []);
+
+  const [autoTranslateEnabled, setAutoTranslateEnabledState] = useState<boolean>(() => {
+    const stored = localStorage.getItem("simantu_auto_translate_enabled");
+    return stored !== null ? stored === "true" : true;
+  });
+  const setAutoTranslateEnabled = useCallback((v: boolean) => {
+    setAutoTranslateEnabledState(v);
+    localStorage.setItem("simantu_auto_translate_enabled", String(v));
+  }, []);
+
+  const [ttsEngine, setTtsEngineState] = useState<string>(() => {
+    return localStorage.getItem("simantu_tts_engine") ?? "edge";
+  });
+  const setTtsEngine = useCallback((engine: string) => {
+    setTtsEngineState(engine);
+    localStorage.setItem("simantu_tts_engine", engine);
+  }, []);
+  const ttsEngineRef = useRef(ttsEngine);
+  useEffect(() => { ttsEngineRef.current = ttsEngine; }, [ttsEngine]);
+
+  const [geminiApiKey, setGeminiApiKeyState] = useState<string>(() => {
+    return localStorage.getItem("simantu_gemini_api_key") ?? "";
+  });
+  const setGeminiApiKey = useCallback((key: string) => {
+    setGeminiApiKeyState(key);
+    localStorage.setItem("simantu_gemini_api_key", key);
+    // Sync to backend .env
+    fetch("/api/tts/gemini-key", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key }),
+    }).catch(err => console.warn("[SIMANTU] Failed to save Gemini key to backend:", err));
   }, []);
 
   const [spellingRules, setSpellingRulesState] = useState<SpellingRule[]>(() => {
@@ -452,6 +640,374 @@ export function AppProvider({ children }: { children: ReactNode }) {
     else localStorage.removeItem("simantu_active_bell_ending");
   }, []);
 
+  // --- Outro Music (Jam Tutup) State & Engine ---
+  const [musicTracks, setMusicTracks] = useState<MusicTrack[]>([]);
+  const [isOutroPlaying, setIsOutroPlaying] = useState<boolean>(false);
+  const [currentOutro, setCurrentOutro] = useState<{
+    id: string;
+    name: string;
+    scheduleTitle?: string;
+    startedAt: number;
+    durationMinutes?: number;
+    remainingSeconds: number;
+    totalRemainingSeconds?: number;
+    currentIndex?: number;
+    totalTracks?: number;
+    nextTrackName?: string;
+  } | null>(null);
+  const [outroVolume, setOutroVolumeState] = useState<number>(() => {
+    const saved = localStorage.getItem("simantu_outro_volume");
+    return saved ? parseFloat(saved) : 0.75;
+  });
+  const outroVolumeRef = useRef<number>(outroVolume);
+  useEffect(() => { outroVolumeRef.current = outroVolume; }, [outroVolume]);
+
+  const outroAudioRef = useRef<HTMLAudioElement | null>(null);
+  const outroFadeIntervalRef = useRef<number | null>(null);
+  const outroTimerRef = useRef<number | null>(null);
+  const outroCountdownIntervalRef = useRef<number | null>(null);
+  const outroPlaylistRef = useRef<Array<{ id: string; name: string; duration?: number; data: string }>>([]);
+  const outroIndexRef = useRef<number>(0);
+  const outroScheduleTitleRef = useRef<string | undefined>(undefined);
+  const [activeMusicPreviewId, setActiveMusicPreviewId] = useState<string | null>(null);
+  const previewAudioRef = useRef<HTMLAudioElement | null>(null);
+
+  const setOutroVolume = useCallback((v: number) => {
+    const clamped = Math.max(0, Math.min(1, v));
+    setOutroVolumeState(clamped);
+    localStorage.setItem("simantu_outro_volume", clamped.toString());
+    if (outroAudioRef.current) {
+      outroAudioRef.current.volume = clamped;
+    }
+  }, []);
+
+  const loadMusicTracks = useCallback(async () => {
+    try {
+      const tracks = await getAllMusicTracks();
+      setMusicTracks(tracks);
+    } catch (e) {
+      console.warn("[SIMANTU] Failed loading music tracks:", e);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadMusicTracks();
+  }, [loadMusicTracks]);
+
+  const stopMusicPreview = useCallback(() => {
+    if (previewAudioRef.current) {
+      try {
+        previewAudioRef.current.pause();
+        previewAudioRef.current.currentTime = 0;
+      } catch (_) {}
+      previewAudioRef.current = null;
+    }
+    setActiveMusicPreviewId(null);
+  }, []);
+
+  const previewMusicTrack = useCallback(async (id: string) => {
+    if (activeMusicPreviewId === id) {
+      stopMusicPreview();
+      return;
+    }
+    stopMusicPreview();
+    const track = await getMusicTrack(id) || musicTracks.find(t => t.id === id);
+    if (!track) return;
+
+    try {
+      const audio = new Audio(track.data);
+      audio.volume = outroVolumeRef.current;
+      audio.onended = () => stopMusicPreview();
+      audio.onerror = () => stopMusicPreview();
+      previewAudioRef.current = audio;
+      setActiveMusicPreviewId(id);
+      await audio.play();
+    } catch (e) {
+      console.warn("Preview audio error:", e);
+      stopMusicPreview();
+    }
+  }, [activeMusicPreviewId, musicTracks, stopMusicPreview]);
+
+  const stopOutroMusic = useCallback(() => {
+    outroPlaylistRef.current = [];
+    outroIndexRef.current = 0;
+    outroScheduleTitleRef.current = undefined;
+
+    if (outroCountdownIntervalRef.current) {
+      window.clearInterval(outroCountdownIntervalRef.current);
+      outroCountdownIntervalRef.current = null;
+    }
+    if (outroTimerRef.current) {
+      window.clearTimeout(outroTimerRef.current);
+      outroTimerRef.current = null;
+    }
+    if (outroFadeIntervalRef.current) {
+      window.clearInterval(outroFadeIntervalRef.current);
+      outroFadeIntervalRef.current = null;
+    }
+
+    const audio = outroAudioRef.current;
+    if (audio) {
+      const fadeStep = audio.volume / 6;
+      let count = 0;
+      const fader = window.setInterval(() => {
+        count++;
+        if (audio.volume > fadeStep) {
+          audio.volume = Math.max(0, audio.volume - fadeStep);
+        }
+        if (count >= 6 || audio.volume <= 0.05) {
+          window.clearInterval(fader);
+          try {
+            audio.pause();
+            audio.currentTime = 0;
+          } catch (_) {}
+          outroAudioRef.current = null;
+        }
+      }, 40);
+    }
+
+    setIsOutroPlaying(false);
+    setCurrentOutro(null);
+  }, []);
+
+  const addMusicTrack = useCallback(async (file: File) => {
+    const track = await processAudioFile(file);
+    await saveMusicTrack(track);
+    await loadMusicTracks();
+    toast({
+      title: "🎵 Musik Berhasil Disimpan",
+      description: `Lagu "${track.name}" siap digunakan untuk jadwal penutup.`,
+    });
+    return track;
+  }, [loadMusicTracks, toast]);
+
+  const removeMusicTrack = useCallback(async (id: string) => {
+    if (currentOutro?.id === id) {
+      stopOutroMusic();
+    }
+    if (activeMusicPreviewId === id) {
+      stopMusicPreview();
+    }
+    await deleteMusicTrack(id);
+    await loadMusicTracks();
+    toast({
+      title: "Lagu Dihapus",
+      description: "Lagu telah dihapus dari koleksi musik penutup.",
+    });
+  }, [currentOutro, activeMusicPreviewId, loadMusicTracks, stopOutroMusic, stopMusicPreview, toast]);
+
+  const playTrackAtIndex = useCallback(async (index: number) => {
+    const playlist = outroPlaylistRef.current;
+    if (!playlist || index >= playlist.length) {
+      stopOutroMusic();
+      return;
+    }
+
+    outroIndexRef.current = index;
+    const track = playlist[index];
+
+    // Clear previous intervals and audio
+    if (outroCountdownIntervalRef.current) {
+      window.clearInterval(outroCountdownIntervalRef.current);
+      outroCountdownIntervalRef.current = null;
+    }
+    if (outroFadeIntervalRef.current) {
+      window.clearInterval(outroFadeIntervalRef.current);
+      outroFadeIntervalRef.current = null;
+    }
+    if (outroTimerRef.current) {
+      window.clearTimeout(outroTimerRef.current);
+      outroTimerRef.current = null;
+    }
+    if (outroAudioRef.current) {
+      try {
+        outroAudioRef.current.pause();
+        outroAudioRef.current.currentTime = 0;
+      } catch (_) {}
+      outroAudioRef.current = null;
+    }
+
+    try {
+      const audio = new Audio(track.data);
+      audio.loop = false; // "diputar sesuai panjang lagu saja"
+      audio.volume = 0; // start 0 for smooth fade-in
+      outroAudioRef.current = audio;
+
+      const targetVol = outroVolumeRef.current;
+      const startedAt = Date.now();
+      const trackDuration = track.duration || 180;
+
+      const calculateTotalRem = () => {
+        let total = 0;
+        for (let i = index; i < playlist.length; i++) {
+          if (i === index) {
+            const curAudio = outroAudioRef.current;
+            const curRem = curAudio && curAudio.duration && !isNaN(curAudio.duration)
+              ? Math.max(0, Math.round(curAudio.duration - curAudio.currentTime))
+              : Math.max(0, trackDuration - Math.round((Date.now() - startedAt) / 1000));
+            total += curRem;
+          } else {
+            total += playlist[i].duration || 180;
+          }
+        }
+        return total;
+      };
+
+      setIsOutroPlaying(true);
+      setCurrentOutro({
+        id: track.id,
+        name: track.name,
+        scheduleTitle: outroScheduleTitleRef.current,
+        startedAt,
+        durationMinutes: 0,
+        remainingSeconds: trackDuration,
+        totalRemainingSeconds: calculateTotalRem(),
+        currentIndex: index,
+        totalTracks: playlist.length,
+        nextTrackName: playlist[index + 1]?.name,
+      });
+
+      if (audioOutputId && typeof (audio as any).setSinkId === "function") {
+        try {
+          await (audio as any).setSinkId(audioOutputId);
+        } catch (_) {}
+      }
+
+      await audio.play();
+
+      // Smooth fade-in over 1.5s
+      const fadeSteps = 30;
+      const stepInc = targetVol / fadeSteps;
+      let currentStep = 0;
+      outroFadeIntervalRef.current = window.setInterval(() => {
+        currentStep++;
+        if (audio && !audio.paused) {
+          audio.volume = Math.min(targetVol, audio.volume + stepInc);
+        }
+        if (currentStep >= fadeSteps) {
+          if (outroFadeIntervalRef.current) {
+            window.clearInterval(outroFadeIntervalRef.current);
+            outroFadeIntervalRef.current = null;
+          }
+          if (audio) audio.volume = targetVol;
+        }
+      }, 50);
+
+      // Countdown ticker every 1s
+      outroCountdownIntervalRef.current = window.setInterval(() => {
+        if (!outroAudioRef.current) return;
+        const curAudio = outroAudioRef.current;
+        const dur = curAudio.duration && !isNaN(curAudio.duration) ? curAudio.duration : trackDuration;
+        const rem = Math.max(0, Math.round(dur - curAudio.currentTime));
+
+        setCurrentOutro(prev => {
+          if (!prev) return null;
+          return {
+            ...prev,
+            remainingSeconds: rem,
+            totalRemainingSeconds: calculateTotalRem(),
+          };
+        });
+
+        // Near end of track (last 2 seconds), apply gentle fade-out
+        if (curAudio.currentTime >= dur - 2.5 && !outroFadeIntervalRef.current && curAudio.volume > 0.1) {
+          const fadeOutStep = curAudio.volume / 25;
+          outroFadeIntervalRef.current = window.setInterval(() => {
+            if (outroAudioRef.current) {
+              outroAudioRef.current.volume = Math.max(0, outroAudioRef.current.volume - fadeOutStep);
+            }
+          }, 100);
+        }
+      }, 1000);
+
+      // When track finishes naturally, play next in playlist!
+      audio.onended = () => {
+        if (index + 1 < playlist.length) {
+          void playTrackAtIndex(index + 1);
+        } else {
+          stopOutroMusic();
+          toast({
+            title: "🎵 Musik Penutup Selesai",
+            description: "Semua lagu penutup telah selesai diputar.",
+          });
+        }
+      };
+
+      audio.onerror = (e) => {
+        console.warn("[SIMANTU] Track playback error:", track.name, e);
+        if (index + 1 < playlist.length) {
+          void playTrackAtIndex(index + 1);
+        } else {
+          stopOutroMusic();
+        }
+      };
+    } catch (err) {
+      console.error("[SIMANTU] Error starting track:", track.name, err);
+      if (index + 1 < playlist.length) {
+        void playTrackAtIndex(index + 1);
+      } else {
+        stopOutroMusic();
+      }
+    }
+  }, [audioOutputId, stopOutroMusic, toast]);
+
+  const skipOutroTrack = useCallback(() => {
+    const playlist = outroPlaylistRef.current;
+    const nextIdx = outroIndexRef.current + 1;
+    if (playlist && nextIdx < playlist.length) {
+      void playTrackAtIndex(nextIdx);
+    } else {
+      stopOutroMusic();
+    }
+  }, [playTrackAtIndex, stopOutroMusic]);
+
+  const startOutroMusic = useCallback(async (
+    trackIds: string | string[],
+    durationMinutesOrTitle?: number | string,
+    scheduleTitle?: string
+  ) => {
+    stopOutroMusic();
+
+    let title = scheduleTitle;
+    if (typeof durationMinutesOrTitle === 'string') {
+      title = durationMinutesOrTitle;
+    }
+
+    const rawIds: string[] = Array.isArray(trackIds)
+      ? trackIds
+      : (typeof trackIds === 'string' && trackIds.includes(',') ? trackIds.split(',').map(s => s.trim()) : [trackIds]);
+    const validIds = rawIds.filter(Boolean);
+
+    if (validIds.length === 0) {
+      console.warn("[SIMANTU] No outro music track specified");
+      return;
+    }
+
+    const playlist: Array<{ id: string; name: string; duration?: number; data: string }> = [];
+    for (const id of validIds) {
+      const track = await getMusicTrack(id) || musicTracks.find(t => t.id === id);
+      if (track) playlist.push(track);
+    }
+
+    if (playlist.length === 0) {
+      console.warn("[SIMANTU] No matching music tracks found for ids:", validIds);
+      return;
+    }
+
+    outroPlaylistRef.current = playlist;
+    outroIndexRef.current = 0;
+    outroScheduleTitleRef.current = title;
+
+    toast({
+      title: "🎵 Memutar Musik Penutup",
+      description: playlist.length === 1
+        ? `Memutar "${playlist[0].name}" sampai selesai.`
+        : `Memutar ${playlist.length} lagu penutup bergantian secara berurutan.`,
+    });
+
+    await playTrackAtIndex(0);
+  }, [stopOutroMusic, musicTracks, playTrackAtIndex, toast]);
+
   const addToQueue = useCallback((item: Omit<QueueItem, 'id'>) => {
     const qi: QueueItem = { ...item, id: crypto.randomUUID() };
     setAnnouncementQueueRaw(prev => {
@@ -486,11 +1042,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return res.json();
   }, []);
 
-  const finalizeSkippedSchedule = useCallback(async (schedule: { id: number; playTime: string; recurring?: boolean }) => {
+  const finalizeSkippedSchedule = useCallback(async (schedule: { id: number; playTime: string; recurring?: boolean; daysOfWeek?: number[] }) => {
     if (schedule.recurring) {
-      const nextPlay = new Date(schedule.playTime);
-      nextPlay.setDate(nextPlay.getDate() + 1);
-      await updateScheduleEntry(schedule.id, { playTime: nextPlay.toISOString(), status: "Waiting" });
+      await updateScheduleEntry(schedule.id, {
+        playTime: getNextRecurringOccurrenceIso(schedule.playTime, schedule.daysOfWeek),
+        status: "Waiting",
+      });
     } else {
       await updateScheduleEntry(schedule.id, { status: "Done" });
     }
@@ -616,7 +1173,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setIsPreparing(false);
     announcementQueueRef.current = [];
     setAnnouncementQueueRaw([]);
-  }, []);
+    stopOutroMusic();
+  }, [stopOutroMusic]);
 
   const clearText = useCallback(() => {
     setTextId("");
@@ -690,9 +1248,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
     try {
       const processedId = applySpellingRules(id, spellingRules, 'id');
       const processedEn = applySpellingRules(en, spellingRules, 'en');
+      let fallbackNotified = false;
+      const handleFallback = (reason: string) => {
+        if (!fallbackNotified) {
+          fallbackNotified = true;
+          toast({
+            title: "Pengalihan Mesin Suara",
+            description: reason,
+            variant: "destructive",
+          });
+        }
+      };
       const fetches: Promise<void>[] = [];
-      if (processedId.trim()) fetches.push(fetchTtsBuffer(processedId, presetId.id).then(b => { idBuffer = b; }));
-      if (processedEn.trim()) fetches.push(fetchTtsBuffer(processedEn, presetEn.en).then(b => { enBuffer = b; }));
+      if (processedId.trim()) fetches.push(fetchTtsBuffer(processedId, presetId.id, ttsEngineRef.current, handleFallback).then(b => { idBuffer = b; }));
+      if (processedEn.trim()) fetches.push(fetchTtsBuffer(processedEn, presetEn.en, ttsEngineRef.current, handleFallback).then(b => { enBuffer = b; }));
       await Promise.all(fetches);
     } catch (err) {
       if (sessionId !== playbackSessionRef.current) return;
@@ -807,7 +1376,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
       const voiceParts = (announcement.voice || "Pria").split("/");
       const sessionBefore = playbackSessionRef.current;
-      await playAudio(announcement.contentId, announcement.contentEn, voiceParts[0], voiceParts[1] || voiceParts[0]);
+      setActiveScheduleId(schedule.id);
+      try {
+        await playAudio(announcement.contentId, announcement.contentEn, voiceParts[0], voiceParts[1] || voiceParts[0]);
+      } finally {
+        setActiveScheduleId(null);
+      }
+
+      const outroIds = schedule.outroMusicIds && schedule.outroMusicIds.length > 0
+        ? schedule.outroMusicIds
+        : (schedule.outroMusicId ? [schedule.outroMusicId] : []);
+      if (outroIds.length > 0) {
+        void startOutroMusic(outroIds, announcement.title);
+      }
 
       const started = playbackSessionRef.current > sessionBefore;
       if (!started) {
@@ -820,12 +1401,27 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
 
       deferredScheduleIdRef.current = null;
+      const nowIso = new Date().toISOString();
+      saveDailyPlaybackLog({
+        scheduleId: schedule.id,
+        announcementId: schedule.announcementId,
+        title: announcement.title || "Pengumuman Terjadwal",
+        playedAt: nowIso,
+        recurring: Boolean(schedule.recurring),
+        daysOfWeek: schedule.daysOfWeek,
+      });
+
       if (schedule.recurring) {
-        const nextPlay = new Date(schedule.playTime);
-        nextPlay.setDate(nextPlay.getDate() + 1);
-        await updateScheduleEntry(schedule.id, { playTime: nextPlay.toISOString(), status: "Waiting" });
+        await updateScheduleEntry(schedule.id, {
+          playTime: getNextRecurringOccurrenceIso(schedule.playTime, schedule.daysOfWeek),
+          status: "Waiting",
+          lastPlayedAt: nowIso,
+        });
       } else {
-        await updateScheduleEntry(schedule.id, { status: "Done" });
+        await updateScheduleEntry(schedule.id, {
+          status: "Done",
+          lastPlayedAt: nowIso,
+        });
       }
       queryClient.invalidateQueries({ queryKey: ["/api/schedules"] });
     } catch (err) {
@@ -922,13 +1518,30 @@ export function AppProvider({ children }: { children: ReactNode }) {
         );
 
         for (const schedule of schedules) {
+          let scheduleStatus = schedule.status;
+          const activeDays = normalizeScheduleDays(schedule.daysOfWeek);
+          const schedulePlayTimeMs = new Date(schedule.playTime).getTime();
+          const isScheduleDayValid =
+            activeDays.length === 0 || activeDays.includes(new Date(schedule.playTime).getDay());
+          if (scheduleStatus === "Playing") {
+            // Recovery path for stale claimed schedules after app restart/crash:
+            // release them back to Waiting so overdue logic can run correctly.
+            await fetch(`/api/schedules/${schedule.id}`, {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ status: "Waiting" }),
+            });
+            scheduleStatus = "Waiting";
+            queryClient.invalidateQueries({ queryKey: ["/api/schedules"] });
+          }
+
           const scheduleNotificationKey = getScheduleNotificationKey(
             schedule.id,
             String(schedule.playTime),
           );
-          const msUntil = new Date(schedule.playTime).getTime() - now.getTime();
+          const msUntil = schedulePlayTimeMs - now.getTime();
 
-          if (schedule.status === "Waiting" && msUntil > 0) {
+          if (scheduleStatus === "Waiting" && msUntil > 0) {
             if (
               msUntil <= FIVE_MIN &&
               msUntil > ONE_MIN &&
@@ -963,7 +1576,24 @@ export function AppProvider({ children }: { children: ReactNode }) {
             }
           }
 
-          if (schedule.status === "Waiting" && new Date(schedule.playTime) <= now) {
+          if (scheduleStatus === "Waiting" && schedulePlayTimeMs <= now.getTime()) {
+            if (schedule.recurring && !isScheduleDayValid) {
+              await fetch(`/api/schedules/${schedule.id}`, {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  playTime: getNextRecurringOccurrenceIso(
+                    String(schedule.playTime),
+                    schedule.daysOfWeek,
+                    now.getTime(),
+                  ),
+                  status: "Waiting",
+                }),
+              });
+              queryClient.invalidateQueries({ queryKey: ["/api/schedules"] });
+              continue;
+            }
+
             if (
               !hasScheduleNotificationStage(
                 scheduleNotificationStagesRef.current,
@@ -997,13 +1627,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
             schedulerProcessingIdsRef.current.add(schedule.id);
 
             const msPastDue = now.getTime() - new Date(schedule.playTime).getTime();
+              const wasMissedBeforeAppBoot =
+                new Date(schedule.playTime).getTime() < appBootTimeRef.current;
             // Grace period: if more than 5 minutes overdue, skip play and silently mark Done
             try {
-              const setScheduleStatus = async (status: "Waiting" | "Done") => {
+              const setScheduleStatus = async (status: "Waiting" | "Done", extraUpdates?: Record<string, any>) => {
                 await fetch(`/api/schedules/${schedule.id}`, {
                   method: "PUT",
                   headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ status }),
+                  body: JSON.stringify({ status, ...extraUpdates }),
                 });
               };
 
@@ -1033,7 +1665,45 @@ export function AppProvider({ children }: { children: ReactNode }) {
               }
 
               if (msPastDue > GRACE_MS) {
-                await setScheduleStatus("Done");
+                if (schedule.recurring) {
+                  await fetch(`/api/schedules/${schedule.id}`, {
+                    method: "PUT",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                      playTime: getNextRecurringOccurrenceIso(
+                        String(schedule.playTime),
+                        schedule.daysOfWeek,
+                        now.getTime(),
+                      ),
+                      status: "Waiting",
+                    }),
+                  });
+                } else {
+                  await setScheduleStatus("Done");
+                }
+                queryClient.invalidateQueries({ queryKey: ["/api/schedules"] });
+                continue;
+              }
+
+              // If schedule was already overdue before this app session started,
+              // do not autoplay on startup; move it forward instead.
+              if (wasMissedBeforeAppBoot) {
+                if (schedule.recurring) {
+                  await fetch(`/api/schedules/${schedule.id}`, {
+                    method: "PUT",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                      playTime: getNextRecurringOccurrenceIso(
+                        String(schedule.playTime),
+                        schedule.daysOfWeek,
+                        now.getTime(),
+                      ),
+                      status: "Waiting",
+                    }),
+                  });
+                } else {
+                  await setScheduleStatus("Done");
+                }
                 queryClient.invalidateQueries({ queryKey: ["/api/schedules"] });
                 continue;
               }
@@ -1048,7 +1718,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
               const voiceParts = (ann.voice || "Pria").split("/");
               const sessionBefore = playbackSessionRef.current;
-              await playAudio(ann.contentId, ann.contentEn, voiceParts[0], voiceParts[1] || voiceParts[0]);
+              setActiveScheduleId(schedule.id);
+              try {
+                await playAudio(ann.contentId, ann.contentEn, voiceParts[0], voiceParts[1] || voiceParts[0]);
+              } finally {
+                setActiveScheduleId(null);
+              }
+
+              const outroIds = schedule.outroMusicIds && schedule.outroMusicIds.length > 0
+                ? schedule.outroMusicIds
+                : (schedule.outroMusicId ? [schedule.outroMusicId] : []);
+              if (outroIds.length > 0) {
+                void startOutroMusic(outroIds, ann.title);
+              }
 
               // If playback could not start (e.g. dashboard became busy), release claim.
               const started = playbackSessionRef.current > sessionBefore;
@@ -1058,17 +1740,32 @@ export function AppProvider({ children }: { children: ReactNode }) {
                 continue;
               }
 
+              const nowIso = new Date().toISOString();
+              saveDailyPlaybackLog({
+                scheduleId: schedule.id,
+                announcementId: schedule.announcementId,
+                title: ann.title || "Pengumuman Terjadwal",
+                playedAt: nowIso,
+                recurring: Boolean(schedule.recurring),
+                daysOfWeek: schedule.daysOfWeek,
+              });
+
               if (schedule.recurring) {
-                // Reset to same time tomorrow
-                const nextPlay = new Date(schedule.playTime);
-                nextPlay.setDate(nextPlay.getDate() + 1);
                 await fetch(`/api/schedules/${schedule.id}`, {
                   method: "PUT",
                   headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ playTime: nextPlay.toISOString(), status: "Waiting" }),
+                  body: JSON.stringify({
+                    playTime: getNextRecurringOccurrenceIso(
+                      String(schedule.playTime),
+                      schedule.daysOfWeek,
+                      now.getTime(),
+                    ),
+                    status: "Waiting",
+                    lastPlayedAt: nowIso,
+                  }),
                 });
               } else {
-                await setScheduleStatus("Done");
+                await setScheduleStatus("Done", { lastPlayedAt: nowIso });
               }
               queryClient.invalidateQueries({ queryKey: ["/api/schedules"] });
             } finally {
@@ -1113,6 +1810,24 @@ export function AppProvider({ children }: { children: ReactNode }) {
         clearDeferredScheduledPlayback,
         confirmPendingScheduledPlayback,
         skipPendingScheduledPlayback,
+        autoTranslateEnabled, setAutoTranslateEnabled,
+        ttsEngine, setTtsEngine,
+        geminiApiKey, setGeminiApiKey,
+        activeScheduleId,
+        musicTracks,
+        loadMusicTracks,
+        addMusicTrack,
+        removeMusicTrack,
+        isOutroPlaying,
+        currentOutro,
+        outroVolume,
+        setOutroVolume,
+        startOutroMusic,
+        skipOutroTrack,
+        stopOutroMusic,
+        activeMusicPreviewId,
+        previewMusicTrack,
+        stopMusicPreview,
       }}
     >
       {children}

@@ -24,8 +24,8 @@ export function Sidebar() {
             <h1 className="font-display font-black text-[15px] tracking-wide text-white">
               SIMANTU<span className="text-[#F9BB00]">.</span>
             </h1>
-            <p className="text-[8px] font-semibold text-white/35 uppercase tracking-[0.15em] mt-1">
-              Universitas Gadjah Mada
+            <p className="text-[8px] font-semibold text-white/50 uppercase tracking-[0.12em] mt-1">
+              Perpustakaan &amp; Arsip UGM
             </p>
           </div>
         </div>
@@ -97,7 +97,7 @@ export function Sidebar() {
               <img src="/logo_aplikasi.png" alt="SIMANTU" className="w-16 h-16 rounded-2xl shadow-lg mx-auto mb-4 border-2 border-white/20" />
               <h2 className="font-display text-2xl font-black text-white mb-1">SIMANTU</h2>
               <p className="text-white/70 text-xs font-medium">Sistem Informasi Pengumuman Terpadu</p>
-              <p className="text-white/50 text-[10px] font-bold uppercase tracking-widest mt-1">Universitas Gadjah Mada</p>
+              <p className="text-white/70 text-[10px] font-bold uppercase tracking-widest mt-1">Perpustakaan dan Arsip UGM</p>
             </div>
 
             {/* Developer */}
@@ -128,7 +128,7 @@ export function Sidebar() {
 
               <div className="text-center">
                 <p className="text-[10px] font-bold text-gray-300 uppercase tracking-widest">
-                  &copy; {new Date().getFullYear()} SIMANTU &mdash; UGM
+                  &copy; {new Date().getFullYear()} SIMANTU &mdash; Perpustakaan dan Arsip UGM
                 </p>
               </div>
             </div>

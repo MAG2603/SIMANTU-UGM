@@ -1,14 +1,14 @@
 {
   "name": "simantu-ugm",
-  "version": "1.0.3",
-  "description": "Sistem Informasi Manajemen Pengumuman Terpadu - Universitas Gadjah Mada",
+  "version": "1.0.9",
+  "description": "Sistem Informasi Manajemen Pengumuman Terpadu - Perpustakaan dan Arsip UGM",
   "author": "MAG2603",
   "type": "module",
   "main": "electron/main.cjs",
   "license": "MIT",
   "scripts": {
     "dev:server": "cross-env NODE_ENV=development tsx server/index.ts",
-    "dev:electron": "wait-on http://localhost:5000 && electron .",
+    "dev:electron": "wait-on http-get://localhost:5000/api/status && electron .",
     "dev": "concurrently -k \"npm run dev:server\" \"npm run dev:electron\"",
     "dev:web": "cross-env NODE_ENV=development tsx server/index.ts",
     "build:renderer": "vite build",
@@ -22,7 +22,8 @@
     "package:linux": "npm run build && electron-builder --linux --publish never",
     "package:all": "npm run prebuild:images && npm run build && electron-builder --win --mac --linux --publish never",
     "release:win": "npm run prebuild:images && npm run build && electron-builder --win --publish always",
-    "check": "tsc"
+    "check": "tsc",
+    "publish": "npm run prebuild:images && npm run build && electron-builder --win --publish always"
   },
   "build": {
     "appId": "com.ugm.simantu",
@@ -114,7 +115,10 @@
       "artifactName": "SIMANTU-Setup-${version}.${ext}",
       "uninstallDisplayName": "SIMANTU - Sistem Informasi Pengumuman Terpadu"
     },
-    "asar": true
+    "asar": true,
+    "asarUnpack": [
+      "**/node_modules/ffmpeg-static/**/*"
+    ]
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",
@@ -157,10 +161,11 @@
     "ffmpeg-static": "^5.3.0",
     "fluent-ffmpeg": "^2.1.3",
     "framer-motion": "^11.13.1",
+    "google-translate-api-x": "^10.7.2",
     "graceful-fs": "^4.2.11",
     "input-otp": "^1.4.2",
     "lucide-react": "^0.453.0",
-    "msedge-tts": "^2.0.4",
+    "msedge-tts": "^2.1.0",
     "nanoid": "^5.0.9",
     "next-themes": "^0.4.6",
     "react": "^18.3.1",

@@ -10,6 +10,10 @@ declare module "http" {
 }
 
 export function log(message: string, source = "express") {
+  if (process.env.NODE_ENV === "production" && process.env.SIMANTU_EMBEDDED_ELECTRON === "1") {
+    return;
+  }
+
   const formattedTime = new Date().toLocaleTimeString("en-US", {
     hour: "numeric",
     minute: "2-digit",
@@ -66,7 +70,9 @@ export async function startServer(): Promise<number> {
     const status = err.status || err.statusCode || 500;
     const message = err.message || "Internal Server Error";
 
-    console.error("Internal Server Error:", err);
+    if (!(process.env.NODE_ENV === "production" && process.env.SIMANTU_EMBEDDED_ELECTRON === "1")) {
+      console.error("Internal Server Error:", err);
+    }
 
     if (res.headersSent) {
       return next(err);

@@ -11,6 +11,11 @@ data/
 # Build outputs
 dist-electron/
 release/
+release-*/
+tmp_asar_extract/
+
+# Test/temp files
+test_suara_gemini.mp3
 
 # Local dev/agent state
 .local/

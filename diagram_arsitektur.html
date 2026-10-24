@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Diagram Arsitektur SIMANTU-UGM</title>
+    <!-- Memuat library Mermaid JS -->
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+        mermaid.initialize({ startOnLoad: true, theme: 'default' });
+    </script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 40px;
+            background-color: #f9f9f9;
+        }
+        .container {
+            background-color: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            text-align: center;
+        }
+        h2 {
+            color: #333;
+            margin-bottom: 20px;
+        }
+        .instruction {
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>Diagram Arsitektur Sistem SIMANTU-UGM</h2>
+    <p class="instruction">Anda dapat menekan klik kanan pada diagram di bawah ini lalu pilih <strong>"Copy Image"</strong> atau <strong>"Salin Gambar"</strong> untuk ditempelkan ke Microsoft Word Anda.</p>
+    
+    <!-- Kode diagram Mermaid -->
+    <div class="mermaid">
+        graph TB
+            subgraph Electron["Electron Shell (Desktop Container)"]
+                direction TB
+                Main["Main Process<br/>(electron/main.cjs)"]
+                Preload["Preload Bridge<br/>(electron/preload.cjs)"]
+                BW["BrowserWindow<br/>(Chromium)"]
+            end
+
+            subgraph Frontend["Frontend (React SPA)"]
+                direction TB
+                App["App.tsx<br/>Root Provider"]
+                Pages["Pages<br/>Dashboard / Library /<br/>Scheduler / Settings"]
+                Context["AppContext.tsx<br/>Global State Manager"]
+                Hooks["Custom Hooks<br/>useAnnouncements, useSchedules<br/>useMissedSchedules, useStatus"]
+                UI["UI Components<br/>Radix UI + Custom"]
+            end
+
+            subgraph Backend["Backend (Express Server)"]
+                direction TB
+                Routes["routes.ts<br/>REST API Endpoints"]
+                Storage["storage.ts<br/>JsonFileStorage"]
+                TTS["tts.ts<br/>TTS Engine"]
+                Translate["Translation Engine<br/>google-translate-api-x"]
+            end
+
+            subgraph External["External Services"]
+                EdgeTTS["Microsoft Edge TTS<br/>(Cloud)"]
+                GH["GitHub Releases<br/>(Auto-Update)"]
+                GoogleTr["Google Translate API<br/>(Free)"]
+            end
+
+            subgraph DataLayer["Data Layer"]
+                JSON["simantu-data.json<br/>(Local File Storage)"]
+                LS["localStorage<br/>(User Preferences)"]
+            end
+
+            Main --> Preload
+            Preload --> BW
+            BW --> Frontend
+            App --> Pages
+            App --> Context
+            Context --> Hooks
+            Pages --> UI
+
+            Frontend -->|"HTTP fetch /api/*"| Backend
+            Frontend -->|"IPC via electronAPI"| Main
+            Main -->|"app-update-status"| Frontend
+            Main -->|"window-hidden"| Frontend
+
+            Routes --> Storage
+            Routes --> TTS
+            Routes --> Translate
+            Storage --> JSON
+            TTS --> EdgeTTS
+            Translate --> GoogleTr
+            Main --> GH
+
+            Frontend -.-> LS
+    </div>
+</div>
+
+</body>
+</html>

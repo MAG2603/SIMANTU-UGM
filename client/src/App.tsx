@@ -4,6 +4,7 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AppProvider, useAppContext } from "@/context/AppContext";
+import { useFetchMissedSchedules } from "@/hooks/use-missed-schedules";
 import NotFound from "@/pages/not-found";
 import Dashboard from "@/pages/Dashboard";
 import LibraryPage, { SchedulerPage, SettingsPage } from "@/pages/SecondaryPages";
@@ -16,10 +17,12 @@ import { format } from "date-fns";
 
 function NetworkBanner() {
   const [isOffline, setIsOffline] = useState(!navigator.onLine);
+  const [internetDown, setInternetDown] = useState(false);
 
+  // Layer 1: Browser online/offline events (instant detection when WiFi adapter disconnects)
   useEffect(() => {
     const goOffline = () => setIsOffline(true);
-    const goOnline = () => setIsOffline(false);
+    const goOnline = () => { setIsOffline(false); /* re-check internet immediately */ checkInternet(); };
     window.addEventListener("offline", goOffline);
     window.addEventListener("online", goOnline);
     return () => {
@@ -28,18 +31,44 @@ function NetworkBanner() {
     };
   }, []);
 
+  // Layer 2: Periodic ping to a public URL to detect actual internet availability
+  // This catches cases where WiFi is connected but has no internet access
+  const checkInternet = async () => {
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 5000);
+      await fetch("https://www.google.com/generate_204", {
+        mode: "no-cors",
+        cache: "no-store",
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
+      setInternetDown(false);
+    } catch {
+      setInternetDown(true);
+    }
+  };
+
+  useEffect(() => {
+    checkInternet(); // initial check
+    const interval = setInterval(checkInternet, 15000); // every 15 seconds
+    return () => clearInterval(interval);
+  }, []);
+
+  const showBanner = isOffline || internetDown;
+
   return (
     <AnimatePresence>
-      {isOffline && (
+      {showBanner && (
         <motion.div
           initial={{ height: 0, opacity: 0 }}
           animate={{ height: "auto", opacity: 1 }}
           exit={{ height: 0, opacity: 0 }}
           transition={{ duration: 0.3 }}
-          className="bg-[#F9BB00] text-[#004175] flex items-center justify-center gap-2 px-4 py-1.5 text-xs font-semibold overflow-hidden shrink-0"
+          className="bg-red-600 text-white flex items-center justify-center gap-2 px-4 py-1.5 text-xs font-semibold overflow-hidden shrink-0"
         >
           <WifiOff className="w-3.5 h-3.5" />
-          <span>Tidak ada koneksi internet — Fitur Text-to-Speech tidak dapat digunakan</span>
+          <span>Tidak ada koneksi internet — Fitur Text-to-Speech dan Auto-Translate tidak dapat digunakan</span>
         </motion.div>
       )}
     </AnimatePresence>
@@ -56,6 +85,15 @@ function Router() {
       <Route component={NotFound} />
     </Switch>
   );
+}
+
+/**
+ * CRITICAL: Initialize missed schedule recovery on app mount
+ * This component must be inside AppProvider to access hooks
+ */
+function MissedScheduleRecovery() {
+  useFetchMissedSchedules();
+  return null;
 }
 
 function DeferredScheduleDialog() {
@@ -167,6 +205,7 @@ function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <AppProvider>
+        <MissedScheduleRecovery />
         <TooltipProvider>
           <AnimatePresence>
             {showOpening && <OpeningAnimation onComplete={handleComplete} />}
