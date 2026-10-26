@@ -263,6 +263,39 @@ export async function registerRoutes(
     res.status(400).json({ message: "Key tidak valid" });
   });
 
+  app.post("/api/tts/test-gemini-key", async (req, res) => {
+    const { key } = req.body;
+    const apiKey = (typeof key === "string" && key.trim()) ? key.trim() : (process.env.GEMINI_API_KEY || "").trim();
+    if (!apiKey) {
+      return res.status(400).json({ valid: false, message: "API Key belum diisi." });
+    }
+    try {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`;
+      const resp = await fetch(url);
+      if (resp.status === 200) {
+        return res.json({ valid: true, message: "API Key valid dan berhasil terhubung ke Google AI!" });
+      }
+      const data: any = await resp.json().catch(() => ({}));
+      const reason = data?.error?.details?.[0]?.reason || "";
+      const errMsg = data?.error?.message || `HTTP ${resp.status}`;
+      if (resp.status === 401) {
+        return res.status(400).json({
+          valid: false,
+          message: `API Key ditolak Google (HTTP 401: ${reason || "UNAUTHENTICATED"}). Ini terjadi jika project GCP belum mengaktifkan 'Generative Language API' atau menggunakan email institusi/kampus. Silakan buat API Key baru dengan opsi 'Create API key in new project' di aistudio.google.com (gunakan akun @gmail.com pribadi).`
+        });
+      }
+      if (resp.status === 429) {
+        return res.status(429).json({
+          valid: false,
+          message: "Batas kuota request Google API terlampaui (HTTP 429). Tunggu beberapa saat."
+        });
+      }
+      return res.status(400).json({ valid: false, message: `Google API Error (${resp.status}): ${errMsg}` });
+    } catch (e: any) {
+      return res.status(500).json({ valid: false, message: `Gagal menghubungi server Google: ${e?.message || e}` });
+    }
+  });
+
   app.get("/api/tts/config", (_req, res) => {
     let raw = process.env.GEMINI_API_KEY || "";
     if (!raw.trim()) {

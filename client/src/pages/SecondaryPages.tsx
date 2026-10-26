@@ -1842,6 +1842,33 @@ export function SettingsPage() {
   const [showGeminiKey, setShowGeminiKey] = useState(false);
   const [isEditingGeminiKey, setIsEditingGeminiKey] = useState(false);
   const [confirmDeleteKey, setConfirmDeleteKey] = useState(false);
+  const [testingGeminiKey, setTestingGeminiKey] = useState(false);
+  const [geminiKeyTestResult, setGeminiKeyTestResult] = useState<{ valid: boolean; message: string } | null>(null);
+
+  const testGeminiKey = async (keyToTest?: string) => {
+    setTestingGeminiKey(true);
+    setGeminiKeyTestResult(null);
+    try {
+      const res = await fetch("/api/tts/test-gemini-key", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key: keyToTest !== undefined ? keyToTest : geminiApiKey }),
+      });
+      const data = await res.json();
+      setGeminiKeyTestResult({ valid: Boolean(data.valid), message: data.message || (data.valid ? "API Key valid" : "API Key tidak valid") });
+      if (data.valid) {
+        toast({ title: "Koneksi Berhasil", description: data.message });
+      } else {
+        toast({ title: "Koneksi Gagal", description: data.message, variant: "destructive" });
+      }
+    } catch (err: any) {
+      const msg = err?.message || "Gagal menghubungi server";
+      setGeminiKeyTestResult({ valid: false, message: msg });
+      toast({ title: "Koneksi Gagal", description: msg, variant: "destructive" });
+    } finally {
+      setTestingGeminiKey(false);
+    }
+  };
   const [deleteBellTarget, setDeleteBellTarget] = useState<import("@/context/AppContext").BellItem | null>(null);
   const [deleteRuleTarget, setDeleteRuleTarget] = useState<SpellingRule | null>(null);
   const hideKeyTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -2050,38 +2077,89 @@ export function SettingsPage() {
                     </div>
 
                     {geminiApiKey.trim() && !isEditingGeminiKey ? (
-                      <div className="flex items-center justify-between p-3.5 bg-gray-50 border border-gray-200 rounded-xl">
-                        <div className="flex items-center gap-2.5">
-                          <div className="w-8 h-8 rounded-lg bg-[#004175]/10 text-[#004175] flex items-center justify-center shrink-0">
-                            <ShieldCheck className="w-4 h-4" />
+                      <div className="space-y-2.5">
+                        <div className="flex items-center justify-between p-3.5 bg-gray-50 border border-gray-200 rounded-xl">
+                          <div className="flex items-center gap-2.5">
+                            <div className="w-8 h-8 rounded-lg bg-[#004175]/10 text-[#004175] flex items-center justify-center shrink-0">
+                              <ShieldCheck className="w-4 h-4" />
+                            </div>
+                            <div>
+                              <p className="text-xs font-bold text-[#004175]">API Key Tersimpan &amp; Terkunci</p>
+                              <p className="text-[11px] font-mono text-gray-400 tracking-wider">
+                                {geminiApiKey.slice(0, 4)}••••••••••••{geminiApiKey.slice(-4)}
+                              </p>
+                            </div>
                           </div>
-                          <div>
-                            <p className="text-xs font-bold text-[#004175]">API Key Tersimpan &amp; Terkunci</p>
-                            <p className="text-[11px] font-mono text-gray-400 tracking-wider">
-                              {geminiApiKey.slice(0, 4)}••••••••••••{geminiApiKey.slice(-4)}
-                            </p>
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => testGeminiKey()}
+                              disabled={testingGeminiKey}
+                              className="px-3 py-1.5 text-xs font-bold bg-[#004175]/10 hover:bg-[#004175]/20 text-[#004175] rounded-lg transition-all flex items-center gap-1.5 disabled:opacity-60"
+                            >
+                              {testingGeminiKey ? (
+                                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                              ) : (
+                                <RefreshCw className="w-3.5 h-3.5" />
+                              )}
+                              Uji Koneksi
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setIsEditingGeminiKey(true);
+                                setShowGeminiKey(false);
+                                setGeminiKeyTestResult(null);
+                              }}
+                              className="px-3.5 py-1.5 text-xs font-bold bg-white border border-gray-200 hover:bg-gray-100 text-[#004175] rounded-lg shadow-sm transition-all"
+                            >
+                              Ganti Key
+                            </button>
                           </div>
                         </div>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setIsEditingGeminiKey(true);
-                            setShowGeminiKey(false);
-                          }}
-                          className="px-3.5 py-1.5 text-xs font-bold bg-white border border-gray-200 hover:bg-gray-100 text-[#004175] rounded-lg shadow-sm transition-all"
-                        >
-                          Ganti Key
-                        </button>
+
+                        {geminiKeyTestResult && (
+                          <div className={`p-3 rounded-xl border text-xs flex items-start gap-2.5 animate-in fade-in duration-200 ${
+                            geminiKeyTestResult.valid
+                              ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                              : 'bg-red-50 border-red-200 text-red-700'
+                          }`}>
+                            {geminiKeyTestResult.valid ? (
+                              <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                            ) : (
+                              <AlertTriangle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
+                            )}
+                            <div className="flex-1 leading-relaxed">
+                              <p className="font-bold">{geminiKeyTestResult.valid ? 'Koneksi Berhasil' : 'Koneksi Gagal'}</p>
+                              <p className="text-[11px] mt-0.5">{geminiKeyTestResult.message}</p>
+                            </div>
+                          </div>
+                        )}
                       </div>
                     ) : (
                       <div className="space-y-2">
+                        <div className="p-3 bg-blue-50/70 border border-blue-100 rounded-xl text-xs text-[#004175] leading-relaxed">
+                          <p className="font-bold mb-1 flex items-center gap-1.5">
+                            <span className="w-1.5 h-1.5 rounded-full bg-[#004175]" />
+                            Panduan API Key Gemini:
+                          </p>
+                          <p className="text-[11px] text-gray-600">
+                            1. Buka <strong>aistudio.google.com/app/apikey</strong> lalu login akun Google.<br/>
+                            2. Buat API key baru (biasanya berawalan <code className="bg-white px-1 py-0.5 rounded border border-gray-200 font-mono text-[10px]">AIzaSy...</code>).<br/>
+                            3. Tempel di bawah dan klik <strong>Uji</strong> untuk memastikan koneksi aktif.
+                          </p>
+                        </div>
+
                         <div className="flex items-center gap-2">
                           <div className="relative flex-1">
                             <input
                               type={showGeminiKey ? 'text' : 'password'}
                               value={geminiApiKey}
-                              onChange={e => setGeminiApiKey(e.target.value)}
-                              placeholder="Masukkan API key Gemini..."
+                              onChange={e => {
+                                setGeminiApiKey(e.target.value);
+                                setGeminiKeyTestResult(null);
+                              }}
+                              placeholder="Masukkan API key Gemini (misal: AIzaSy...)..."
                               autoComplete="off"
                               spellCheck={false}
                               className="w-full px-4 py-3 pr-10 rounded-xl bg-gray-50 border-2 border-gray-200 text-[#004175] font-mono text-sm focus:outline-none focus:border-[#004175] focus:ring-4 focus:ring-[#004175]/10 transition-all"
@@ -2096,18 +2174,52 @@ export function SettingsPage() {
                             </button>
                           </div>
                           {geminiApiKey.trim() && (
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setIsEditingGeminiKey(false);
-                                setShowGeminiKey(false);
-                              }}
-                              className="px-4 py-3 bg-[#004175] text-[#F9BB00] text-xs font-bold rounded-xl hover:bg-[#003159] transition-all shadow-sm shrink-0"
-                            >
-                              Kunci &amp; Selesai
-                            </button>
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => testGeminiKey(geminiApiKey)}
+                                disabled={testingGeminiKey}
+                                className="px-3.5 py-3 bg-[#004175]/10 hover:bg-[#004175]/20 text-[#004175] text-xs font-bold rounded-xl transition-all shadow-sm shrink-0 flex items-center gap-1.5 disabled:opacity-60"
+                              >
+                                {testingGeminiKey ? (
+                                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                                ) : (
+                                  <RefreshCw className="w-3.5 h-3.5" />
+                                )}
+                                Uji
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setIsEditingGeminiKey(false);
+                                  setShowGeminiKey(false);
+                                }}
+                                className="px-4 py-3 bg-[#004175] text-[#F9BB00] text-xs font-bold rounded-xl hover:bg-[#003159] transition-all shadow-sm shrink-0"
+                              >
+                                Kunci &amp; Selesai
+                              </button>
+                            </>
                           )}
                         </div>
+
+                        {geminiKeyTestResult && (
+                          <div className={`p-3 rounded-xl border text-xs flex items-start gap-2.5 animate-in fade-in duration-200 ${
+                            geminiKeyTestResult.valid
+                              ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                              : 'bg-red-50 border-red-200 text-red-700'
+                          }`}>
+                            {geminiKeyTestResult.valid ? (
+                              <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                            ) : (
+                              <AlertTriangle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
+                            )}
+                            <div className="flex-1 leading-relaxed">
+                              <p className="font-bold">{geminiKeyTestResult.valid ? 'Koneksi Berhasil' : 'Koneksi Gagal'}</p>
+                              <p className="text-[11px] mt-0.5">{geminiKeyTestResult.message}</p>
+                            </div>
+                          </div>
+                        )}
+
                         <div className="flex items-center justify-between text-[10px] text-gray-400">
                           <p>
                             {showGeminiKey

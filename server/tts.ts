@@ -1,4 +1,4 @@
-import { MsEdgeTTS, OUTPUT_FORMAT } from "msedge-tts";
+import { WebSocket } from "ws";
 import { spawnSync } from "child_process";
 import fs from "fs";
 import path from "path";
@@ -22,7 +22,7 @@ function getTtsCacheDir(): string {
 }
 
 function getCacheKey(text: string, voiceId: string, engine = "edge"): string {
-  const engineKey = `${engine}-v8`;
+  const engineKey = `${engine}-v9`;
   return crypto.createHash("sha256").update(`${engineKey}:::${voiceId}:::${text.trim()}`).digest("hex");
 }
 
@@ -274,7 +274,137 @@ function getGeminiApiKey(): string {
   return "";
 }
 
-// 1. PRIMARY ENGINE: Edge TTS via Python (supports modern Sec-MS-GEC v2 tokens)
+// 1. PRIMARY ENGINE: Modern Edge TTS in pure Node.js (via WebSocket + dynamic Sec-MS-GEC v2 token)
+// Runs 100% self-contained inside the Electron package without needing Python or external runtimes!
+const CHROMIUM_FULL_VERSION = "143.0.3650.75";
+const TRUSTED_CLIENT_TOKEN = "6A5AA1D4EAFF4E9FB37E23D68491D6F4";
+const WINDOWS_FILE_TIME_EPOCH = 11644473600n;
+
+function generateSecMsGecToken(): string {
+  const ticks = BigInt(Math.floor(Date.now() / 1000 + Number(WINDOWS_FILE_TIME_EPOCH))) * 10000000n;
+  const roundedTicks = ticks - (ticks % 3000000000n);
+  const strToHash = `${roundedTicks}${TRUSTED_CLIENT_TOKEN}`;
+  const hash = crypto.createHash("sha256");
+  hash.update(strToHash, "ascii");
+  return hash.digest("hex").toUpperCase();
+}
+
+async function synthesizeEdgeNodeModern(
+  text: string,
+  voiceId: string,
+  isEnglish = false,
+  prosody: { rate: string; pitch: string; volume: string } = SPEECH_PROSODY_ID,
+  timeoutMs = 15000
+): Promise<Buffer> {
+  const token = generateSecMsGecToken();
+  const url = `wss://api.msedgeservices.com/tts/cognitiveservices/websocket/v1?Ocp-Apim-Subscription-Key=${TRUSTED_CLIENT_TOKEN}&Sec-MS-GEC=${token}&Sec-MS-GEC-Version=1-${CHROMIUM_FULL_VERSION}`;
+
+  return new Promise<Buffer>((resolve, reject) => {
+    let ws: WebSocket;
+    try {
+      ws = new WebSocket(url, {
+        origin: "chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold",
+        headers: {
+          Pragma: "no-cache",
+          "Cache-Control": "no-cache",
+          "User-Agent": `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${CHROMIUM_FULL_VERSION.split(".")[0]}.0.0.0 Safari/537.36 Edg/${CHROMIUM_FULL_VERSION.split(".")[0]}.0.0.0`,
+          "Accept-Encoding": "gzip, deflate, br, zstd",
+          "Accept-Language": "en-US,en;q=0.9",
+          Cookie: `muid=${crypto.randomBytes(16).toString("hex").toUpperCase()};`,
+        },
+      });
+    } catch (wsInitErr) {
+      return reject(wsInitErr);
+    }
+
+    const chunks: Buffer[] = [];
+    const timer = setTimeout(() => {
+      try { ws.close(); } catch {}
+      reject(new Error(`Edge TTS timeout after ${timeoutMs}ms for: "${text.substring(0, 30)}..."`));
+    }, timeoutMs);
+
+    ws.on("open", () => {
+      ws.send(
+        `Content-Type:application/json; charset=utf-8\r\nPath:speech.config\r\n\r\n` +
+          JSON.stringify({
+            context: {
+              synthesis: {
+                audio: {
+                  metadataoptions: { sentenceBoundaryEnabled: "false", wordBoundaryEnabled: "false" },
+                  outputFormat: "audio-24khz-48kbitrate-mono-mp3",
+                },
+              },
+            },
+          })
+      );
+
+      const reqId = crypto.randomBytes(16).toString("hex");
+      const lang = voiceId.substring(0, 5);
+      const safeText = escapeXml(replaceAmpersand(text, isEnglish));
+      const ssml = `<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xmlns:mstts="https://www.w3.org/2001/mstts" xml:lang="${lang}"><voice name="${voiceId}"><prosody rate="${prosody.rate || "+0%"}" pitch="${prosody.pitch || "+0Hz"}" volume="${prosody.volume || "+0%"}">${safeText}</prosody></voice></speak>`;
+
+      ws.send(`X-RequestId:${reqId}\r\nContent-Type:application/ssml+xml\r\nPath:ssml\r\n\r\n${ssml}`);
+    });
+
+    ws.on("message", (data: any, isBinary: boolean) => {
+      if (isBinary) {
+        const sep = "Path:audio\r\n";
+        const idx = data.indexOf(sep);
+        if (idx !== -1) {
+          chunks.push(data.subarray(idx + sep.length));
+        }
+      } else {
+        const msg = data.toString();
+        if (msg.includes("Path:turn.end")) {
+          clearTimeout(timer);
+          try { ws.close(); } catch {}
+          if (chunks.length === 0) {
+            reject(new Error("Edge TTS returned empty stream for: " + text.substring(0, 50)));
+          } else {
+            resolve(Buffer.concat(chunks));
+          }
+        }
+      }
+    });
+
+    ws.on("error", (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
+
+    ws.on("close", (code, reason) => {
+      clearTimeout(timer);
+      if (chunks.length > 0) {
+        resolve(Buffer.concat(chunks));
+      } else {
+        reject(new Error(`Edge TTS WebSocket closed (code ${code}): ${reason || "no audio received"}`));
+      }
+    });
+  });
+}
+
+async function synthesizeEdgeNodeModernWithRetry(
+  text: string,
+  voiceId: string,
+  isEnglish = false,
+  prosody: { rate: string; pitch: string; volume: string } = SPEECH_PROSODY_ID
+): Promise<Buffer> {
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      return await synthesizeEdgeNodeModern(text, voiceId, isEnglish, prosody);
+    } catch (err: any) {
+      lastErr = err;
+      const is429 = String(err?.message || err).includes("429");
+      const delayMs = is429 ? 1000 * attempt : 500;
+      console.warn(`[TTS Node Modern] Attempt ${attempt} failed (${err?.message || err}). Retrying in ${delayMs}ms...`);
+      await new Promise(r => setTimeout(r, delayMs));
+    }
+  }
+  throw lastErr;
+}
+
+// Secondary fallback: Python edge_tts module (if user machine has Python installed)
 function synthesizeEdgePython(
   text: string,
   voiceId: string,
@@ -311,51 +441,6 @@ function synthesizeEdgePython(
     throw new Error(`edge_tts error (code ${result.status}): ${result.stderr?.toString() || "empty output"}`);
   }
   return result.stdout as Buffer;
-}
-
-// Edge TTS Node (msedge-tts) legacy fallback
-async function streamToBufferNode(
-  tts: MsEdgeTTS,
-  text: string,
-  voiceId: string,
-  isEnglish = false,
-  prosody = SPEECH_PROSODY_ID,
-): Promise<Buffer> {
-  await tts.setMetadata(voiceId, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
-  const processed = escapeXml(replaceAmpersand(text, isEnglish));
-  const { audioStream } = tts.toStream(processed, prosody);
-  const chunks: Buffer[] = [];
-  return new Promise<Buffer>((resolve, reject) => {
-    audioStream.on("data", (chunk: Buffer) => chunks.push(chunk));
-    audioStream.on("end", () => {
-      const buf = Buffer.concat(chunks);
-      if (buf.length === 0) reject(new Error("msedge-tts returned empty stream for: " + text.substring(0, 50)));
-      else resolve(buf);
-    });
-    audioStream.on("error", reject);
-  });
-}
-
-async function streamToBufferNodeWithRetry(
-  tts: MsEdgeTTS,
-  text: string,
-  voiceId: string,
-  isEnglish = false,
-  prosody = SPEECH_PROSODY_ID,
-): Promise<Buffer> {
-  let lastErr: unknown;
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    try {
-      return await streamToBufferNode(tts, text, voiceId, isEnglish, prosody);
-    } catch (err: any) {
-      lastErr = err;
-      const is429 = String(err?.message || err).includes("429");
-      const delayMs = is429 ? 2000 * attempt : 800;
-      console.warn(`[TTS Node] Attempt ${attempt} failed: ${err?.message || err}. Retrying in ${delayMs}ms...`);
-      await new Promise(r => setTimeout(r, delayMs));
-    }
-  }
-  throw lastErr;
 }
 
 // Derive Gemini prebuilt voice name from voice ID.
@@ -398,7 +483,7 @@ async function requestGeminiAudio(model: string, text: string, voiceName: string
           },
         ],
       },
-      contents: [{ parts: [{ text }] }],
+      contents: [{ role: "user", parts: [{ text }] }],
       generationConfig: {
         responseModalities: ["AUDIO"],
         speechConfig: {
@@ -422,6 +507,7 @@ async function requestGeminiAudio(model: string, text: string, voiceName: string
         headers: {
           "Content-Type": "application/json",
           "Content-Length": Buffer.byteLength(payload),
+          "x-goog-api-key": apiKey,
         },
         timeout: 25000,
       },
@@ -463,12 +549,13 @@ async function synthesizeGeminiTts(text: string, voiceId: string, _isEnglish: bo
   if (!apiKey) throw new Error("Gemini API Key is not configured");
 
   const voiceName = getGeminiVoiceName(voiceId);
-  // Attempt high-availability models with audio modality support
+  // Model list updated October 2026 — Google retired gemini-2.x for new API keys.
+  // Use dedicated TTS models first (faster, cheaper), then general-purpose flash as fallback.
   const models = [
-    "gemini-3.1-flash-tts-preview",
-    "gemini-2.5-flash-preview-tts",
-    "gemini-3.8-flash-lite-tts",
-    "gemini-3.8-flash-tts",
+    "gemini-3.8-flash-tts",       // Dedicated TTS model (best quality, lowest latency)
+    "gemini-3.8-flash-lite-tts",  // Lighter TTS fallback
+    "gemini-2.5-flash-preview-tts", // Legacy preview TTS
+    "gemini-3.8-flash",           // General-purpose flash (supports AUDIO modality)
   ];
   let lastError: Error | null = null;
 
@@ -477,7 +564,18 @@ async function synthesizeGeminiTts(text: string, voiceId: string, _isEnglish: bo
       return await requestGeminiAudio(model, text, voiceName, apiKey);
     } catch (err: any) {
       lastError = err;
-      console.warn(`[TTS] Model ${model} (${voiceName}) gagal: ${err?.message || err}. Mencoba model alternatif...`);
+      const errStr = String(err?.message || err);
+      console.warn(`[TTS] Model ${model} (${voiceName}) gagal: ${errStr}.`);
+      // Stop retrying immediately if it's a credentials issue (not a model issue)
+      if (errStr.includes("401") || errStr.includes("UNAUTHENTICATED") || errStr.includes("API key not valid")) {
+        break;
+      }
+      // Stop retrying if this is a 404 — the model simply doesn't exist, try the next one
+      if (errStr.includes("404") || errStr.includes("NOT_FOUND")) {
+        console.warn(`[TTS] Model ${model} tidak tersedia, mencoba model alternatif...`);
+        continue;
+      }
+      console.warn(`[TTS] Mencoba model alternatif...`);
     }
   }
 
@@ -561,62 +659,76 @@ function synthesizeWindowsSapi(text: string, isEnglish: boolean): Buffer {
 
 // Multi-tier chunk synthesizer with automatic cascade
 async function synthesizeChunkWithCascade(
-  tts: MsEdgeTTS,
   chunk: string,
   segVoice: string,
   isEnglish: boolean,
   prosody: { rate: string; pitch: string; volume: string },
   preferredEngine = "edge"
-): Promise<Buffer> {
-  const tryEdge = async (): Promise<Buffer | null> => {
+): Promise<{ audio: Buffer; engineUsed: string }> {
+  const tryEdge = async (): Promise<{ audio: Buffer; engineUsed: string } | null> => {
+    // 1. Primary: Direct Modern Node.js WebSocket with Sec-MS-GEC v2 (Zero Python dependency, works everywhere out-of-the-box!)
+    try {
+      const nodeAudio = await synthesizeEdgeNodeModernWithRetry(chunk, segVoice, isEnglish, prosody);
+      if (nodeAudio && nodeAudio.length > 0) {
+        return { audio: nodeAudio, engineUsed: "edge" };
+      }
+    } catch (nodeErr: any) {
+      console.warn(`[TTS] Edge-TTS Modern Node gagal: ${nodeErr?.message || nodeErr}. Mencoba Python fallback...`);
+    }
+
+    // 2. Secondary fallback: Python edge_tts module (if available)
     try {
       const edgeAudio = synthesizeEdgePython(chunk, segVoice, prosody);
-      if (edgeAudio && edgeAudio.length > 0) return edgeAudio;
-    } catch (pyErr: any) {
-      console.warn(`[TTS] Edge-TTS (Python) gagal: ${pyErr?.message || pyErr}. Mencoba Edge-TTS Node fallback...`);
-      try {
-        return await streamToBufferNodeWithRetry(tts, chunk, segVoice, isEnglish, prosody);
-      } catch (nodeErr: any) {
-        console.warn(`[TTS] Edge-TTS WebSocket error: ${nodeErr?.message || nodeErr}`);
+      if (edgeAudio && edgeAudio.length > 0) {
+        return { audio: edgeAudio, engineUsed: "edge" };
       }
+    } catch {
+      // Python not available or failed
     }
+
     return null;
   };
 
-  const tryGemini = async (): Promise<Buffer | null> => {
+  const tryGemini = async (): Promise<{ audio: Buffer; engineUsed: string } | null> => {
     try {
       console.log(`[TTS] Menggunakan Gemini Flash TTS (${segVoice}) untuk: "${chunk.substring(0, 40)}..."`);
       const geminiAudio = await synthesizeGeminiTts(chunk, segVoice, isEnglish);
-      if (geminiAudio && geminiAudio.length > 0) return geminiAudio;
+      if (geminiAudio && geminiAudio.length > 0) {
+        return { audio: geminiAudio, engineUsed: "gemini" };
+      }
     } catch (geminiErr: any) {
       console.warn(`[TTS] Gemini TTS gagal: ${geminiErr?.message || geminiErr}`);
     }
     return null;
   };
 
-  const tryGoogle = async (): Promise<Buffer | null> => {
+  const tryGoogle = async (): Promise<{ audio: Buffer; engineUsed: string } | null> => {
     try {
       console.log(`[TTS] Menggunakan Google Translate TTS...`);
       const googleAudio = await synthesizeGoogleTranslateTts(chunk, isEnglish);
-      if (googleAudio && googleAudio.length > 0) return googleAudio;
+      if (googleAudio && googleAudio.length > 0) {
+        return { audio: googleAudio, engineUsed: "google" };
+      }
     } catch (googleErr: any) {
       console.warn(`[TTS] Google Translate TTS gagal: ${googleErr?.message || googleErr}`);
     }
     return null;
   };
 
-  const trySapi = (): Buffer | null => {
+  const trySapi = (): { audio: Buffer; engineUsed: string } | null => {
     try {
       console.log(`[TTS] Menggunakan Fallback Offline Windows SAPI...`);
       const sapiAudio = synthesizeWindowsSapi(chunk, isEnglish);
-      if (sapiAudio && sapiAudio.length > 0) return sapiAudio;
+      if (sapiAudio && sapiAudio.length > 0) {
+        return { audio: sapiAudio, engineUsed: "sapi" };
+      }
     } catch (sapiErr: any) {
       console.error(`[TTS] Windows SAPI gagal: ${sapiErr?.message || sapiErr}`);
     }
     return null;
   };
 
-  let attempts: (() => Promise<Buffer | null> | Buffer | null)[] = [];
+  let attempts: (() => Promise<{ audio: Buffer; engineUsed: string } | null> | { audio: Buffer; engineUsed: string } | null)[] = [];
   if (preferredEngine === "gemini") {
     attempts = [tryGemini, tryEdge, tryGoogle, trySapi];
   } else if (preferredEngine === "google") {
@@ -628,7 +740,7 @@ async function synthesizeChunkWithCascade(
 
   for (const fn of attempts) {
     const res = await fn();
-    if (res && res.length > 0) return res;
+    if (res && res.audio.length > 0) return res;
   }
 
   throw new Error("Semua engine TTS gagal memproses audio");
@@ -645,12 +757,20 @@ export async function synthesizeSpeech(
   voiceId: string,
   preferredEngine = "edge"
 ): Promise<SynthesisResult> {
+  // Normalize preset names like "Pria", "Wanita", "Pria/Pria" to valid Azure voice IDs
+  if (VOICE_PRESETS[voiceId]) {
+    voiceId = VOICE_PRESETS[voiceId].id;
+  } else if (/^pria/i.test(voiceId)) {
+    voiceId = VOICE_PRESETS["Pria"].id;
+  } else if (/^wanita/i.test(voiceId)) {
+    voiceId = VOICE_PRESETS["Wanita"].id;
+  }
+
   const cached = getCachedAudio(text, voiceId, preferredEngine);
   if (cached) {
     return { audio: cached, engineUsed: preferredEngine };
   }
 
-  const tts = new MsEdgeTTS();
   const segments = segmentByLanguage(text);
   const mpeg1Parts: Buffer[] = [];
 
@@ -704,6 +824,10 @@ export async function synthesizeSpeech(
         const errMsg = String(err?.message || err);
         if (errMsg.includes("429") || errMsg.includes("quota") || errMsg.includes("RESOURCE_EXHAUSTED")) {
           fallbackReason = "Kuota harian Gemini API telah habis (limit 10 request/hari pada Free Tier). Suara otomatis dialihkan ke Edge TTS.";
+        } else if (errMsg.includes("401") || errMsg.includes("UNAUTHENTICATED") || errMsg.includes("API key not valid")) {
+          fallbackReason = "API Key Gemini tidak valid atau ditolak Google (HTTP 401). Silakan cek API Key di Pengaturan. Suara dialihkan ke Edge TTS.";
+        } else if (errMsg.includes("timed out") || errMsg.includes("timeout")) {
+          fallbackReason = "Koneksi ke Gemini API timeout. Suara otomatis dialihkan ke Edge TTS.";
         } else {
           fallbackReason = `Gemini TTS mengalami kendala (${errMsg.slice(0, 70)}). Suara dialihkan ke Edge TTS.`;
         }
@@ -711,23 +835,21 @@ export async function synthesizeSpeech(
     }
 
     // Engine selain Gemini (Edge TTS & Google): potong per kalimat (max 250 char)
-    // NOTE: synthesizeChunkWithCascade mengembalikan audio mentah (MPEG2 dari Edge, MP3 dari Google).
-    //       transcodeToMpeg1 diperlukan untuk Edge, tapi Google Translate sudah mengembalikan MP3.
-    //       Untuk konsistensi, transcode semua output melalui ffmpeg agar format sama persis.
+    // NOTE: synthesizeChunkWithCascade mengembalikan audio mentah (MP3).
+    //       transcodeToMpeg1 normalizes any MP3 input → consistent MPEG1 Layer3 @ 44100Hz
     const textChunks = splitTextChunks(segText);
     const fallbackEngine = preferredEngine === "gemini" ? "edge" : preferredEngine;
 
     for (const chunk of textChunks) {
-      const rawAudio = await synthesizeChunkWithCascade(tts, chunk, segVoice, isEnglish, prosody, fallbackEngine);
-      // transcodeToMpeg1 normalizes any MP3/MPEG2 input → consistent MPEG1 Layer3 @ 44100Hz
-      const transcoded = transcodeToMpeg1(rawAudio);
+      const chunkResult = await synthesizeChunkWithCascade(chunk, segVoice, isEnglish, prosody, fallbackEngine);
+      actualEngineUsed = chunkResult.engineUsed;
+      const transcoded = transcodeToMpeg1(chunkResult.audio);
       mpeg1Parts.push(transcoded);
     }
   }
 
   const mpeg1 = Buffer.concat(mpeg1Parts);
-  // PENTING: Hanya simpan cache dengan key preferredEngine jika engine tersebut BENAR-BENAR berhasil!
-  // JANGAN simpan audio fallback Edge TTS ke dalam cache key "gemini", agar tidak mengotori cache.
+  // Simpan cache dengan actualEngineUsed agar akurat
   if (actualEngineUsed === preferredEngine) {
     saveCachedAudio(text, voiceId, mpeg1, preferredEngine);
   } else {
