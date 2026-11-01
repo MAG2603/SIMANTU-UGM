@@ -1,6 +1,6 @@
 {
   "name": "simantu-ugm",
-  "version": "1.0.10",
+  "version": "1.0.11",
   "description": "Sistem Informasi Manajemen Pengumuman Terpadu - Perpustakaan dan Arsip UGM",
   "author": "MAG2603",
   "type": "module",
@@ -8,11 +8,11 @@
   "license": "MIT",
   "scripts": {
     "dev:server": "cross-env NODE_ENV=development tsx server/index.ts",
-    "dev:electron": "wait-on http-get://localhost:5000/api/status && electron .",
+    "dev:electron": "wait-on http-get://127.0.0.1:5000/api/status && node electron-dev.cjs",
     "dev": "concurrently -k \"npm run dev:server\" \"npm run dev:electron\"",
     "dev:web": "cross-env NODE_ENV=development tsx server/index.ts",
     "build:renderer": "vite build",
-    "build:server": "esbuild server/index.ts --bundle --platform=node --format=cjs --outfile=dist-electron/server.cjs --external:electron --external:vite --external:@replit/vite-plugin-runtime-error-modal --alias:@shared=./shared",
+    "build:server": "esbuild server/index.ts --bundle --platform=node --format=cjs --outfile=dist-electron/server.cjs --external:electron --external:vite --external:@replit/vite-plugin-runtime-error-modal --external:onnxruntime-node --external:bufferutil --external:utf-8-validate --alias:@shared=./shared",
     "build:electron": "npm run build:renderer && npm run build:server",
     "build": "npm run build:electron",
     "prebuild": "node update-app-version.cjs",
@@ -38,12 +38,18 @@
     "files": [
       "dist/**/*",
       "dist-electron/**/*",
-      "electron/**/*"
+      "electron/**/*",
+      "services/**/*",
+      "!services/supertonic3/**/*"
     ],
     "extraResources": [
       {
         "from": "dist/public",
         "to": "public"
+      },
+      {
+        "from": "services",
+        "to": "services"
       }
     ],
     "publish": [
@@ -117,7 +123,8 @@
     },
     "asar": true,
     "asarUnpack": [
-      "**/node_modules/ffmpeg-static/**/*"
+      "**/node_modules/ffmpeg-static/**/*",
+      "**/node_modules/onnxruntime-node/**/*"
     ]
   },
   "dependencies": {
@@ -170,6 +177,7 @@
     "msedge-tts": "^2.1.0",
     "nanoid": "^5.0.9",
     "next-themes": "^0.4.6",
+    "onnxruntime-node": "^1.31.1",
     "react": "^18.3.1",
     "react-day-picker": "^8.10.1",
     "react-dom": "^18.3.1",

@@ -2,6 +2,9 @@ import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
+import { startAllServices, stopAllServices, getServicesStatus } from "./servicesManager";
+
+export { startAllServices, stopAllServices, getServicesStatus };
 
 declare module "http" {
   interface IncomingMessage {
@@ -100,13 +103,14 @@ export async function startServer(): Promise<number> {
       httpServer.listen(
         {
           port,
-          host: "127.0.0.1",
+          host: "0.0.0.0",
         },
         () => {
           httpServer.off("error", onError);
           const address = httpServer.address();
           const activePort = typeof address === "object" && address ? address.port : port;
           log(`serving on port ${activePort}`);
+          void startAllServices();
           resolve(activePort);
         },
       );

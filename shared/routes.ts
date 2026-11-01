@@ -113,9 +113,10 @@ export const api = {
         text: z.string(),
         from: z.string().default("id"),
         to: z.string().default("en"),
+        engine: z.string().optional(),
       }),
       responses: {
-        200: z.object({ translatedText: z.string() }),
+        200: z.object({ translatedText: z.string(), engine: z.string().optional() }),
         400: errorSchemas.validation,
       },
     },

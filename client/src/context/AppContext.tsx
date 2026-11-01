@@ -116,7 +116,7 @@ export function saveDailyPlaybackLog(entry: Omit<DailyPlaybackLog, "id">): Daily
   try {
     localStorage.setItem("simantu_daily_playback_logs", JSON.stringify(updated));
     window.dispatchEvent(new CustomEvent("simantu:playback-log-updated"));
-  } catch (_) {}
+  } catch (_) { }
   return newEntry;
 }
 
@@ -226,7 +226,7 @@ interface AppContextType {
   setAudioOutputId: (id: string) => void;
   schedulerEnabled: boolean;
   setSchedulerEnabled: (v: boolean) => void;
-  playAudio: (idText?: string, enText?: string, voiceName?: string, voiceEnName?: string) => Promise<void>;
+  playAudio: (idText?: string, enText?: string, voiceName?: string, voiceEnName?: string) => Promise<boolean>;
   stopAudio: () => void;
   clearText: () => void;
   resetApp: () => void;
@@ -249,8 +249,23 @@ interface AppContextType {
   skipPendingScheduledPlayback: () => Promise<void>;
   autoTranslateEnabled: boolean;
   setAutoTranslateEnabled: (v: boolean) => void;
+  translationEngine: "google" | "deepl";
+  setTranslationEngine: (engine: "google" | "deepl") => void;
+  deeplApiKey: string;
+  setDeeplApiKey: (key: string) => void;
   ttsEngine: string;
   setTtsEngine: (engine: string) => void;
+  supertonicUrl: string;
+  setSupertonicUrl: (url: string) => void;
+  supertonicVoiceMale: string;
+  setSupertonicVoiceMale: (voice: string) => void;
+  supertonicVoiceFemale: string;
+  setSupertonicVoiceFemale: (voice: string) => void;
+  /** Kecepatan bicara Supertonic (0.7 – 1.3, 1.0 = normal) */
+  supertonicSpeedId: number;
+  setSupertonicSpeedId: (speed: number) => void;
+  supertonicSpeedEn: number;
+  setSupertonicSpeedEn: (speed: number) => void;
   geminiApiKey: string;
   setGeminiApiKey: (key: string) => void;
   activeScheduleId: number | null;
@@ -362,7 +377,7 @@ function sendNotification(title: string, body: string, icon = '🔊', duration =
   } catch (err) {
     console.warn('[SIMANTU] Electron notification failed:', err);
   }
-  
+
   // Fallback: Web Notification API (browser / non-Electron)
   if (typeof Notification === 'undefined') return;
   if (Notification.permission === 'granted') {
@@ -420,6 +435,12 @@ function applySpellingRules(text: string, rules: SpellingRule[], lang: 'id' | 'e
   return result;
 }
 
+// On-device engine (Supertonic 3) runs inference on CPU and needs adequate timeout.
+const TTS_REQUEST_TIMEOUT_MS: Record<string, number> = {
+  supertonic: 300000,
+  edge: 120000,
+};
+
 // Synthesize TTS on server (returns MPEG1 L3 after transcoding), decode via Web Audio API.
 async function fetchTtsBuffer(
   text: string,
@@ -428,31 +449,46 @@ async function fetchTtsBuffer(
   onFallback?: (reason: string) => void
 ): Promise<AudioBuffer> {
   const ctx = getAudioContext();
-  const res = await fetch("/api/tts", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ text, voice: voiceId, engine }),
-  });
-  if (!res.ok) {
-    let errMsg = `TTS request failed: ${res.status}`;
-    try {
-      const errData = await res.json();
-      if (errData?.message) errMsg = errData.message;
-    } catch {
-      // ignore
+  const timeoutMs = TTS_REQUEST_TIMEOUT_MS[engine] ?? 180000;
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch("/api/tts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, voice: voiceId, engine }),
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      let errMsg = `TTS request failed: ${res.status}`;
+      try {
+        const errData = await res.json();
+        if (errData?.message) errMsg = errData.message;
+      } catch {
+        // ignore
+      }
+      throw new Error(errMsg);
     }
-    throw new Error(errMsg);
-  }
-  const fallbackHeader = res.headers.get("X-TTS-Fallback-Reason");
-  if (fallbackHeader && onFallback) {
-    try {
-      onFallback(decodeURIComponent(fallbackHeader));
-    } catch {
-      onFallback(fallbackHeader);
+    const fallbackHeader = res.headers.get("X-TTS-Fallback-Reason");
+    if (fallbackHeader && onFallback) {
+      try {
+        onFallback(decodeURIComponent(fallbackHeader));
+      } catch {
+        onFallback(fallbackHeader);
+      }
     }
+    const ab = await res.arrayBuffer();
+    return await ctx.decodeAudioData(ab);
+  } catch (err) {
+    if ((err as Error)?.name === "AbortError") {
+      throw new Error(
+        `Mesin suara tidak merespons dalam ${Math.round(timeoutMs / 1000)} detik. Pastikan server TTS aktif.`
+      );
+    }
+    throw err;
+  } finally {
+    window.clearTimeout(timer);
   }
-  const ab = await res.arrayBuffer();
-  return ctx.decodeAudioData(ab);
 }
 
 export function AppProvider({ children }: { children: ReactNode }) {
@@ -558,6 +594,152 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, []);
   const ttsEngineRef = useRef(ttsEngine);
   useEffect(() => { ttsEngineRef.current = ttsEngine; }, [ttsEngine]);
+
+  const [supertonicUrl, setSupertonicUrlState] = useState<string>(() => {
+    return localStorage.getItem("simantu_supertonic_url") ?? "http://127.0.0.1:8765";
+  });
+  const setSupertonicUrl = useCallback((url: string) => {
+    setSupertonicUrlState(url);
+    localStorage.setItem("simantu_supertonic_url", url);
+    fetch("/api/tts/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ supertonicUrl: url }),
+    }).catch(err => console.warn("[SIMANTU] Failed to save Supertonic URL:", err));
+  }, []);
+
+  const [supertonicVoiceMale, setSupertonicVoiceMaleState] = useState<string>(() => {
+    return localStorage.getItem("simantu_supertonic_voice_male") ?? "M1";
+  });
+  const setSupertonicVoiceMale = useCallback((voice: string) => {
+    const v = voice.toUpperCase();
+    setSupertonicVoiceMaleState(v);
+    localStorage.setItem("simantu_supertonic_voice_male", v);
+    fetch("/api/tts/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ supertonicVoiceMale: v }),
+    }).catch(err => console.warn("[SIMANTU] Failed to save Supertonic male voice:", err));
+  }, []);
+
+  const [supertonicVoiceFemale, setSupertonicVoiceFemaleState] = useState<string>(() => {
+    return localStorage.getItem("simantu_supertonic_voice_female") ?? "F1";
+  });
+  const setSupertonicVoiceFemale = useCallback((voice: string) => {
+    const v = voice.toUpperCase();
+    setSupertonicVoiceFemaleState(v);
+    localStorage.setItem("simantu_supertonic_voice_female", v);
+    fetch("/api/tts/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ supertonicVoiceFemale: v }),
+    }).catch(err => console.warn("[SIMANTU] Failed to save Supertonic female voice:", err));
+  }, []);
+
+  // --- Kecepatan bicara Supertonic (disimpan lokal + server, POST di-debounce untuk slider) ---
+  const clampSpeed = (n: number) => {
+    if (!Number.isFinite(n)) return 1.0;
+    return Math.round(Math.min(1.3, Math.max(0.7, n)) * 100) / 100;
+  };
+  const readSpeed = (key: string) => {
+    const raw = localStorage.getItem(key);
+    return raw !== null ? clampSpeed(parseFloat(raw)) : 1.0;
+  };
+  const speedSaveTimerRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const persistSpeed = useCallback((field: "supertonicSpeedId" | "supertonicSpeedEn", v: number) => {
+    const timers = speedSaveTimerRef.current;
+    if (timers[field]) clearTimeout(timers[field]);
+    timers[field] = setTimeout(() => {
+      fetch("/api/tts/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ [field]: v }),
+      }).catch(err => console.warn("[SIMANTU] Failed to save Supertonic speed:", err));
+    }, 400);
+  }, []);
+
+  const [supertonicSpeedId, setSupertonicSpeedIdState] = useState<number>(() => readSpeed("simantu_supertonic_speed_id"));
+  const setSupertonicSpeedId = useCallback((speed: number) => {
+    const v = clampSpeed(speed);
+    setSupertonicSpeedIdState(v);
+    localStorage.setItem("simantu_supertonic_speed_id", v.toString());
+    persistSpeed("supertonicSpeedId", v);
+  }, [persistSpeed]);
+
+  const [supertonicSpeedEn, setSupertonicSpeedEnState] = useState<number>(() => readSpeed("simantu_supertonic_speed_en"));
+  const setSupertonicSpeedEn = useCallback((speed: number) => {
+    const v = clampSpeed(speed);
+    setSupertonicSpeedEnState(v);
+    localStorage.setItem("simantu_supertonic_speed_en", v.toString());
+    persistSpeed("supertonicSpeedEn", v);
+  }, [persistSpeed]);
+
+  const [translationEngine, setTranslationEngineState] = useState<"google" | "deepl">(() => {
+    return (localStorage.getItem("simantu_translation_engine") as "google" | "deepl") || "google";
+  });
+  const setTranslationEngine = useCallback((engine: "google" | "deepl") => {
+    setTranslationEngineState(engine);
+    localStorage.setItem("simantu_translation_engine", engine);
+    fetch("/api/translate/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ engine }),
+    }).catch(err => console.warn("[SIMANTU] Failed to save translation engine:", err));
+  }, []);
+
+  const [deeplApiKey] = useState<string>("");
+  const setDeeplApiKey = useCallback((_key: string) => {
+    // API key dikelola oleh administrator via .env server, tidak disimpan di client
+  }, []);
+
+  useEffect(() => {
+    const localMale = localStorage.getItem("simantu_supertonic_voice_male");
+    const localFemale = localStorage.getItem("simantu_supertonic_voice_female");
+    const localSpeedId = localStorage.getItem("simantu_supertonic_speed_id");
+    const localSpeedEn = localStorage.getItem("simantu_supertonic_speed_en");
+    if (localMale || localFemale || localSpeedId || localSpeedEn) {
+      fetch("/api/tts/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...(localMale ? { supertonicVoiceMale: localMale } : {}),
+          ...(localFemale ? { supertonicVoiceFemale: localFemale } : {}),
+          ...(localSpeedId ? { supertonicSpeedId: parseFloat(localSpeedId) } : {}),
+          ...(localSpeedEn ? { supertonicSpeedEn: parseFloat(localSpeedEn) } : {}),
+        }),
+      }).catch(() => {});
+    }
+
+    fetch("/api/tts/config")
+      .then(res => res.json())
+      .then(data => {
+        if (data.supertonicUrl && !localStorage.getItem("simantu_supertonic_url")) {
+          setSupertonicUrlState(data.supertonicUrl);
+        }
+        if (data.supertonicVoiceMale && !localStorage.getItem("simantu_supertonic_voice_male")) {
+          setSupertonicVoiceMaleState(data.supertonicVoiceMale);
+        }
+        if (data.supertonicVoiceFemale && !localStorage.getItem("simantu_supertonic_voice_female")) {
+          setSupertonicVoiceFemaleState(data.supertonicVoiceFemale);
+        }
+        if (typeof data.supertonicSpeedId === "number" && !localStorage.getItem("simantu_supertonic_speed_id")) {
+          setSupertonicSpeedIdState(data.supertonicSpeedId);
+        }
+        if (typeof data.supertonicSpeedEn === "number" && !localStorage.getItem("simantu_supertonic_speed_en")) {
+          setSupertonicSpeedEnState(data.supertonicSpeedEn);
+        }
+      })
+      .catch(() => { });
+
+    fetch("/api/translate/config")
+      .then(res => res.json())
+      .then(data => {
+        if (data.engine && !localStorage.getItem("simantu_translation_engine")) {
+          setTranslationEngineState(data.engine);
+        }
+      })
+      .catch(() => { });
+  }, []);
 
   const [geminiApiKey, setGeminiApiKeyState] = useState<string>(() => {
     return localStorage.getItem("simantu_gemini_api_key") ?? "";
@@ -699,7 +881,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       try {
         previewAudioRef.current.pause();
         previewAudioRef.current.currentTime = 0;
-      } catch (_) {}
+      } catch (_) { }
       previewAudioRef.current = null;
     }
     setActiveMusicPreviewId(null);
@@ -760,7 +942,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           try {
             audio.pause();
             audio.currentTime = 0;
-          } catch (_) {}
+          } catch (_) { }
           outroAudioRef.current = null;
         }
       }, 40);
@@ -823,7 +1005,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       try {
         outroAudioRef.current.pause();
         outroAudioRef.current.currentTime = 0;
-      } catch (_) {}
+      } catch (_) { }
       outroAudioRef.current = null;
     }
 
@@ -870,7 +1052,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (audioOutputId && typeof (audio as any).setSinkId === "function") {
         try {
           await (audio as any).setSinkId(audioOutputId);
-        } catch (_) {}
+        } catch (_) { }
       }
 
       await audio.play();
@@ -1166,7 +1348,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       queuePlayTimeoutRef.current = null;
     }
     if (sourceNodeRef.current) {
-      try { sourceNodeRef.current.stop(); } catch (_) {}
+      try { sourceNodeRef.current.stop(); } catch (_) { }
       sourceNodeRef.current = null;
     }
     setIsPlaying(false);
@@ -1189,7 +1371,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       queuePlayTimeoutRef.current = null;
     }
     if (sourceNodeRef.current) {
-      try { sourceNodeRef.current.stop(); } catch (_) {}
+      try { sourceNodeRef.current.stop(); } catch (_) { }
       sourceNodeRef.current = null;
     }
     setIsPlaying(false);
@@ -1203,7 +1385,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setBellEnabled(true);
   }, []);
 
-  const playAudio = useCallback(async (idText?: string, enText?: string, voiceName?: string, voiceEnName?: string) => {
+  const playAudio = useCallback(async (idText?: string, enText?: string, voiceName?: string, voiceEnName?: string): Promise<boolean> => {
     const id = idText ?? textIdRef.current;
     const en = enText ?? textEnRef.current;
     const vId = voiceName ?? voiceRef.current;
@@ -1217,7 +1399,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         title: "Sedang Memuat",
         description: "Tunggu proses persiapan selesai sebelum menjalankan pengumuman lagi.",
       });
-      return;
+      return false;
     }
 
     // If already playing, add to queue instead of interrupting.
@@ -1228,8 +1410,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
         title: "📋 Ditambahkan ke Antrian",
         description: `"${label}" akan diputar setelah pengumuman saat ini selesai.`,
       });
-      return;
+      return false;
     }
+
+    // Stop any active music preview so it never overlaps with an announcement
+    stopMusicPreview();
 
     // Start a new playback session and invalidate older in-flight sessions.
     const sessionId = playbackSessionRef.current + 1;
@@ -1240,7 +1425,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
     const isSessionActive = () => sessionId === playbackSessionRef.current && !stopRequested.current;
 
-    // Phase 1: synthesize + decode TTS in parallel via Web Audio API
+    // Phase 1: synthesize + decode TTS via Web Audio API
     stopRequested.current = false;
     setIsPreparing(true);
     let idBuffer: AudioBuffer | null = null;
@@ -1259,12 +1444,26 @@ export function AppProvider({ children }: { children: ReactNode }) {
           });
         }
       };
-      const fetches: Promise<void>[] = [];
-      if (processedId.trim()) fetches.push(fetchTtsBuffer(processedId, presetId.id, ttsEngineRef.current, handleFallback).then(b => { idBuffer = b; }));
-      if (processedEn.trim()) fetches.push(fetchTtsBuffer(processedEn, presetEn.en, ttsEngineRef.current, handleFallback).then(b => { enBuffer = b; }));
-      await Promise.all(fetches);
+      if (ttsEngineRef.current === "supertonic") {
+        // Supertonic runs on a single-worker CPU lock; synthesize sequentially to avoid lock contention timeouts
+        if (processedId.trim()) {
+          idBuffer = await fetchTtsBuffer(processedId, presetId.id, ttsEngineRef.current, handleFallback);
+        }
+        if (!isSessionActive()) {
+          setIsPreparing(false);
+          return false;
+        }
+        if (processedEn.trim()) {
+          enBuffer = await fetchTtsBuffer(processedEn, presetEn.en, ttsEngineRef.current, handleFallback);
+        }
+      } else {
+        const fetches: Promise<void>[] = [];
+        if (processedId.trim()) fetches.push(fetchTtsBuffer(processedId, presetId.id, ttsEngineRef.current, handleFallback).then(b => { idBuffer = b; }));
+        if (processedEn.trim()) fetches.push(fetchTtsBuffer(processedEn, presetEn.en, ttsEngineRef.current, handleFallback).then(b => { enBuffer = b; }));
+        await Promise.all(fetches);
+      }
     } catch (err) {
-      if (sessionId !== playbackSessionRef.current) return;
+      if (sessionId !== playbackSessionRef.current) return false;
       console.error("[SIMANTU] TTS preparation failed:", err);
       setIsPreparing(false);
       toast({
@@ -1272,40 +1471,45 @@ export function AppProvider({ children }: { children: ReactNode }) {
         description: (err as Error).message || "Terjadi kesalahan saat menghubungi server TTS.",
         variant: "destructive",
       });
-      return;
+      return false;
     }
-    if (!isSessionActive()) return;
+    if (!isSessionActive()) {
+      setIsPreparing(false);
+      return false;
+    }
 
     // Phase 2: play sequentially via AudioBufferSourceNode (also drives spectrum)
     setAnalyserNode(getAnalyserNode());
     setIsPreparing(false);
     setIsPlaying(true);
+    let playbackCompleted = false;
     try {
       if (bellEnabled && isSessionActive()) {
         const opening = await getBellFromLibrary(bellLibrary, activeBellOpeningId, "/Opening.mp3");
-        if (!isSessionActive()) return;
+        if (!isSessionActive()) return false;
         await playBuffer(opening, sourceNodeRef);
-        if (!isSessionActive()) return;
+        if (!isSessionActive()) return false;
       }
       if (idBuffer && isSessionActive()) {
         await playBuffer(idBuffer, sourceNodeRef);
-        if (!isSessionActive()) return;
+        if (!isSessionActive()) return false;
       }
       if (idBuffer && enBuffer && bellEnabled && isSessionActive()) {
         const middleBell = await getBellFromLibrary(bellLibrary, activeBellOpeningId, "/Opening.mp3");
-        if (!isSessionActive()) return;
+        if (!isSessionActive()) return false;
         await playBuffer(middleBell, sourceNodeRef);
-        if (!isSessionActive()) return;
+        if (!isSessionActive()) return false;
       }
       if (enBuffer && isSessionActive()) {
         await playBuffer(enBuffer, sourceNodeRef);
-        if (!isSessionActive()) return;
+        if (!isSessionActive()) return false;
       }
       if (bellEnabled && isSessionActive()) {
         const ending = await getBellFromLibrary(bellLibrary, activeBellEndingId, "/Ending.mp3");
-        if (!isSessionActive()) return;
+        if (!isSessionActive()) return false;
         await playBuffer(ending, sourceNodeRef);
       }
+      playbackCompleted = isSessionActive();
     } catch (err) {
       console.error("[SIMANTU] Playback error:", err);
     } finally {
@@ -1322,12 +1526,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
           queuePlayTimeoutRef.current = window.setTimeout(() => {
             queuePlayTimeoutRef.current = null;
             if (sessionId !== playbackSessionRef.current || stopRequested.current) return;
-            playAudio(next.textId, next.textEn, next.voice, next.voiceEn);
+            void playAudio(next.textId, next.textEn, next.voice, next.voiceEn);
           }, 300);
         }
       }
     }
-  }, [bellEnabled, spellingRules, bellLibrary, activeBellOpeningId, activeBellEndingId, toast, addToQueue]);
+    return playbackCompleted;
+  }, [bellEnabled, spellingRules, bellLibrary, activeBellOpeningId, activeBellEndingId, toast, addToQueue, stopMusicPreview]);
 
   const confirmPendingScheduledPlayback = useCallback(async () => {
     const pending = pendingScheduledPlaybackRef.current;
@@ -1377,17 +1582,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const voiceParts = (announcement.voice || "Pria").split("/");
       const sessionBefore = playbackSessionRef.current;
       setActiveScheduleId(schedule.id);
+      let completed = false;
       try {
-        await playAudio(announcement.contentId, announcement.contentEn, voiceParts[0], voiceParts[1] || voiceParts[0]);
+        completed = await playAudio(announcement.contentId, announcement.contentEn, voiceParts[0], voiceParts[1] || voiceParts[0]);
       } finally {
         setActiveScheduleId(null);
-      }
-
-      const outroIds = schedule.outroMusicIds && schedule.outroMusicIds.length > 0
-        ? schedule.outroMusicIds
-        : (schedule.outroMusicId ? [schedule.outroMusicId] : []);
-      if (outroIds.length > 0) {
-        void startOutroMusic(outroIds, announcement.title);
       }
 
       const started = playbackSessionRef.current > sessionBefore;
@@ -1398,6 +1597,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
         }
         setPendingScheduledPlayback(previousPrompt);
         return;
+      }
+
+      if (completed) {
+        const outroIds = schedule.outroMusicIds && schedule.outroMusicIds.length > 0
+          ? schedule.outroMusicIds
+          : (schedule.outroMusicId ? [schedule.outroMusicId] : []);
+        if (outroIds.length > 0) {
+          void startOutroMusic(outroIds, announcement.title);
+        }
       }
 
       deferredScheduleIdRef.current = null;
@@ -1485,6 +1693,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [stopAudio]);
 
   // Always-active scheduler (alarm-like)
+  const playAudioRef = useRef(playAudio);
+  useEffect(() => {
+    playAudioRef.current = playAudio;
+  }, [playAudio]);
+
+  const startOutroMusicRef = useRef(startOutroMusic);
+  useEffect(() => {
+    startOutroMusicRef.current = startOutroMusic;
+  }, [startOutroMusic]);
+
+  const stalePlayingRecoveredRef = useRef(false);
+
   useEffect(() => {
     const checkSchedules = async () => {
       if (schedulerCheckInFlightRef.current) return;
@@ -1517,14 +1737,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
           activeScheduleNotificationKeys,
         );
 
+        const isFirstRecoveryPass = !stalePlayingRecoveredRef.current;
+        stalePlayingRecoveredRef.current = true;
+
         for (const schedule of schedules) {
           let scheduleStatus = schedule.status;
           const activeDays = normalizeScheduleDays(schedule.daysOfWeek);
           const schedulePlayTimeMs = new Date(schedule.playTime).getTime();
           const isScheduleDayValid =
             activeDays.length === 0 || activeDays.includes(new Date(schedule.playTime).getDay());
-          if (scheduleStatus === "Playing") {
-            // Recovery path for stale claimed schedules after app restart/crash:
+          if (
+            scheduleStatus === "Playing" &&
+            isFirstRecoveryPass &&
+            !schedulerProcessingIdsRef.current.has(schedule.id)
+          ) {
+            // Recovery path for stale claimed schedules after app restart/crash (only once on startup):
             // release them back to Waiting so overdue logic can run correctly.
             await fetch(`/api/schedules/${schedule.id}`, {
               method: "PUT",
@@ -1533,6 +1760,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
             });
             scheduleStatus = "Waiting";
             queryClient.invalidateQueries({ queryKey: ["/api/schedules"] });
+          }
+
+          // Cegah pemutaran ulang jadwal yang baru saja selesai diputar dalam 60 detik terakhir
+          if (
+            schedule.lastPlayedAt &&
+            now.getTime() - new Date(schedule.lastPlayedAt).getTime() < 60_000
+          ) {
+            continue;
           }
 
           const scheduleNotificationKey = getScheduleNotificationKey(
@@ -1627,8 +1862,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
             schedulerProcessingIdsRef.current.add(schedule.id);
 
             const msPastDue = now.getTime() - new Date(schedule.playTime).getTime();
-              const wasMissedBeforeAppBoot =
-                new Date(schedule.playTime).getTime() < appBootTimeRef.current;
+            const wasMissedBeforeAppBoot =
+              new Date(schedule.playTime).getTime() < appBootTimeRef.current;
             // Grace period: if more than 5 minutes overdue, skip play and silently mark Done
             try {
               const setScheduleStatus = async (status: "Waiting" | "Done", extraUpdates?: Record<string, any>) => {
@@ -1719,17 +1954,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
               const voiceParts = (ann.voice || "Pria").split("/");
               const sessionBefore = playbackSessionRef.current;
               setActiveScheduleId(schedule.id);
+              let completed = false;
               try {
-                await playAudio(ann.contentId, ann.contentEn, voiceParts[0], voiceParts[1] || voiceParts[0]);
+                completed = await playAudioRef.current(ann.contentId, ann.contentEn, voiceParts[0], voiceParts[1] || voiceParts[0]);
               } finally {
                 setActiveScheduleId(null);
-              }
-
-              const outroIds = schedule.outroMusicIds && schedule.outroMusicIds.length > 0
-                ? schedule.outroMusicIds
-                : (schedule.outroMusicId ? [schedule.outroMusicId] : []);
-              if (outroIds.length > 0) {
-                void startOutroMusic(outroIds, ann.title);
               }
 
               // If playback could not start (e.g. dashboard became busy), release claim.
@@ -1738,6 +1967,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
                 await setScheduleStatus("Waiting");
                 queryClient.invalidateQueries({ queryKey: ["/api/schedules"] });
                 continue;
+              }
+
+              if (completed) {
+                const outroIds = schedule.outroMusicIds && schedule.outroMusicIds.length > 0
+                  ? schedule.outroMusicIds
+                  : (schedule.outroMusicId ? [schedule.outroMusicId] : []);
+                if (outroIds.length > 0) {
+                  void startOutroMusicRef.current(outroIds, ann.title);
+                }
               }
 
               const nowIso = new Date().toISOString();
@@ -1783,14 +2021,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
     checkSchedules();
     const interval = window.setInterval(checkSchedules, 30000);
     return () => window.clearInterval(interval);
-  }, [schedulerEnabled, playAudio]);
+  }, [schedulerEnabled]);
 
   return (
-    <AppContext.Provider 
-      value={{ 
-        textId, setTextId, 
-        textEn, setTextEn, 
-        voice, setVoice, 
+    <AppContext.Provider
+      value={{
+        textId, setTextId,
+        textEn, setTextEn,
+        voice, setVoice,
         voiceEn, setVoiceEn,
         isPlaying, isPreparing,
         bellEnabled, setBellEnabled,
@@ -1811,7 +2049,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
         confirmPendingScheduledPlayback,
         skipPendingScheduledPlayback,
         autoTranslateEnabled, setAutoTranslateEnabled,
+        translationEngine, setTranslationEngine,
+        deeplApiKey, setDeeplApiKey,
         ttsEngine, setTtsEngine,
+        supertonicUrl, setSupertonicUrl,
+        supertonicVoiceMale, setSupertonicVoiceMale,
+        supertonicVoiceFemale, setSupertonicVoiceFemale,
+        supertonicSpeedId, setSupertonicSpeedId,
+        supertonicSpeedEn, setSupertonicSpeedEn,
         geminiApiKey, setGeminiApiKey,
         activeScheduleId,
         musicTracks,

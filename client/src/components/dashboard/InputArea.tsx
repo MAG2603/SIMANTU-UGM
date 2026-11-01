@@ -1,8 +1,26 @@
-import { useState, useEffect, useRef, useCallback } from "react";
-import { Mic, Play, Square, Bookmark, Bell, BellOff, Info, CheckCircle2, Trash2, RotateCcw, AlertTriangle, Clock3, Languages } from "lucide-react";
+import { useState, useEffect, useRef } from "react";
+import {
+  Mic,
+  Play,
+  Square,
+  Bookmark,
+  Bell,
+  BellOff,
+  Info,
+  CheckCircle2,
+  Trash2,
+  RotateCcw,
+  AlertTriangle,
+  Clock3,
+  Languages,
+  RefreshCw,
+  Copy,
+  X,
+} from "lucide-react";
 import { useAppContext } from "@/context/AppContext";
-import { useCreateAnnouncement, useAnnouncements } from "@/hooks/use-announcements";
+import { useCreateAnnouncement, useUpdateAnnouncement, useAnnouncements } from "@/hooks/use-announcements";
 import { useSchedules, useUpdateSchedule } from "@/hooks/use-schedules";
+import { useToast } from "@/hooks/use-toast";
 import { motion, AnimatePresence } from "framer-motion";
 import { format } from "date-fns";
 
@@ -29,16 +47,20 @@ export function InputArea() {
     deferScheduledPlayback,
     clearDeferredScheduledPlayback,
     autoTranslateEnabled, setAutoTranslateEnabled,
+    translationEngine,
   } = useAppContext();
   const [isSaveModalOpen, setIsSaveModalOpen] = useState(false);
   const [saveTitle, setSaveTitle] = useState("");
+  const [saveConflict, setSaveConflict] = useState<{ existing: any; reason: string } | null>(null);
   const [scheduleConflict, setScheduleConflict] = useState<ScheduleConflict | null>(null);
   const [conflictAction, setConflictAction] = useState<"cancel-and-play" | "queue-after-manual" | null>(null);
   
   const createAnnouncement = useCreateAnnouncement();
+  const updateAnnouncement = useUpdateAnnouncement();
   const { data: announcements = [] } = useAnnouncements();
   const { data: schedules = [] } = useSchedules();
   const updateSchedule = useUpdateSchedule();
+  const { toast } = useToast();
   const playbackBusy = isPlaying || isPreparing;
   const controlsLocked = isPreparing;
 
@@ -46,15 +68,30 @@ export function InputArea() {
   const [isTranslating, setIsTranslating] = useState(false);
   const translateAbortRef = useRef<AbortController | null>(null);
   const lastTranslatedTextRef = useRef<string>("");
+  const isUserEditingIdRef = useRef<boolean>(false);
+
+  // Sync tracking on initial mount so reopening or navigating back never triggers auto-translate
+  useEffect(() => {
+    lastTranslatedTextRef.current = textId.trim();
+  }, []);
 
   useEffect(() => {
     if (!autoTranslateEnabled) return;
     const trimmed = textId.trim();
     if (!trimmed) return;
+
+    // CRITICAL: Only translate if the change was directly initiated by user typing in Indonesian textarea
+    if (!isUserEditingIdRef.current) {
+      lastTranslatedTextRef.current = trimmed;
+      return;
+    }
+
     // Don't re-translate if text hasn't actually changed
     if (trimmed === lastTranslatedTextRef.current) return;
 
     const timer = setTimeout(async () => {
+      isUserEditingIdRef.current = false;
+
       // Abort any previous in-flight request
       if (translateAbortRef.current) translateAbortRef.current.abort();
       const controller = new AbortController();
@@ -65,7 +102,7 @@ export function InputArea() {
         const res = await fetch("/api/translate", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text: trimmed, from: "id", to: "en" }),
+          body: JSON.stringify({ text: trimmed, from: "id", to: "en", engine: translationEngine }),
           signal: controller.signal,
         });
         if (!res.ok) throw new Error("Translate failed");
@@ -86,35 +123,116 @@ export function InputArea() {
     }, 1000); // 1-second debounce
 
     return () => clearTimeout(timer);
-  }, [textId, autoTranslateEnabled, setTextEn]);
+  }, [textId, autoTranslateEnabled, setTextEn, translationEngine]);
 
-  // When both textId and textEn are loaded together (e.g. from a template),
-  // mark the textId as "already translated" so auto-translate won't overwrite the English text
+  // When textEn changes externally (e.g. from template load or manual clear),
+  // sync tracking and clear editing flag so auto-translate never overwrites it
   useEffect(() => {
-    if (textId.trim() && textEn.trim() && lastTranslatedTextRef.current !== textId.trim()) {
-      lastTranslatedTextRef.current = textId.trim();
-    }
-  }, [textEn]); // Only react to external textEn changes (template loads)
+    lastTranslatedTextRef.current = textId.trim();
+    isUserEditingIdRef.current = false;
+  }, [textEn]);
 
   // Detect if the current text pair is already saved in the library
   const alreadySaved = (textId.trim() || textEn.trim()) && announcements.some(
     (a: any) => a.contentId.trim() === textId.trim() && a.contentEn.trim() === textEn.trim()
   );
 
+  const getUniqueCopyTitle = (baseTitle: string) => {
+    const existingLower = new Set(announcements.map((a: any) => a.title.trim().toLowerCase()));
+    let candidate = `${baseTitle.trim()} (Salinan)`;
+    let idx = 2;
+    while (existingLower.has(candidate.toLowerCase())) {
+      candidate = `${baseTitle.trim()} (Salinan ${idx})`;
+      idx++;
+    }
+    return candidate;
+  };
+
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!saveTitle.trim() || (!textId.trim() && !textEn.trim())) return;
-    
+    const trimmedTitle = saveTitle.trim();
+    if (!trimmedTitle || (!textId.trim() && !textEn.trim())) return;
+
+    const titleLower = trimmedTitle.toLowerCase();
+    const contentLower = textId.trim().toLowerCase();
+
+    const matched = announcements.find((a: any) => {
+      const isTitleMatch = a.title.trim().toLowerCase() === titleLower;
+      const isContentMatch = Boolean(contentLower && a.contentId?.trim().toLowerCase() === contentLower);
+      return isTitleMatch || isContentMatch;
+    });
+
+    if (matched) {
+      const isTitleMatch = matched.title.trim().toLowerCase() === titleLower;
+      const isContentMatch = Boolean(contentLower && matched.contentId?.trim().toLowerCase() === contentLower);
+      const reason = isTitleMatch && isContentMatch
+        ? "Judul & Naskah sama"
+        : isTitleMatch
+          ? "Judul sama"
+          : "Isi naskah sama";
+      setSaveConflict({ existing: matched, reason });
+      return;
+    }
+
     await createAnnouncement.mutateAsync({
-      title: saveTitle,
+      title: trimmedTitle,
       contentId: textId,
       contentEn: textEn,
       voice: `${voice}/${voiceEn}`,
       isFavorite: false,
     });
-    
+
+    toast({
+      title: "✅ Naskah Disimpan",
+      description: `Naskah "${trimmedTitle}" berhasil disimpan ke pustaka.`,
+    });
     setIsSaveModalOpen(false);
     setSaveTitle("");
+  };
+
+  const executeSaveConflictStrategy = async (strategy: "overwrite" | "keep-both") => {
+    if (!saveConflict) return;
+    const trimmedTitle = saveTitle.trim();
+    const { existing } = saveConflict;
+
+    try {
+      if (strategy === "overwrite") {
+        await updateAnnouncement.mutateAsync({
+          id: existing.id,
+          title: trimmedTitle,
+          contentId: textId,
+          contentEn: textEn,
+          voice: `${voice}/${voiceEn}`,
+          isFavorite: existing.isFavorite ?? false,
+        });
+        toast({
+          title: "✅ Naskah Lama Diperbarui",
+          description: `Naskah "${existing.title}" telah ditimpa dengan isi terbaru.`,
+        });
+      } else {
+        const copyTitle = getUniqueCopyTitle(trimmedTitle);
+        await createAnnouncement.mutateAsync({
+          title: copyTitle,
+          contentId: textId,
+          contentEn: textEn,
+          voice: `${voice}/${voiceEn}`,
+          isFavorite: false,
+        });
+        toast({
+          title: "✅ Disimpan Sebagai Salinan",
+          description: `Naskah baru disimpan dengan judul "${copyTitle}".`,
+        });
+      }
+      setSaveConflict(null);
+      setIsSaveModalOpen(false);
+      setSaveTitle("");
+    } catch (err: any) {
+      toast({
+        title: "Gagal Menyimpan Naskah",
+        description: err?.message || "Terjadi kesalahan saat menyimpan ke pustaka.",
+        variant: "destructive",
+      });
+    }
   };
 
   const formatConflictCountdown = (ms: number) => {
@@ -276,7 +394,10 @@ export function InputArea() {
             </div>
             <textarea
               value={textId}
-              onChange={(e) => setTextId(e.target.value)}
+              onChange={(e) => {
+                isUserEditingIdRef.current = true;
+                setTextId(e.target.value);
+              }}
               disabled={controlsLocked}
               placeholder="Masukkan teks pengumuman bahasa Indonesia..."
               className="w-full flex-1 p-3 sm:p-4 pt-8 sm:pt-10 bg-gray-50 border border-gray-200 rounded-xl resize-none text-gray-800 text-sm sm:text-base 
@@ -288,12 +409,17 @@ export function InputArea() {
             <div className="absolute top-3 left-3 bg-[#004175]/10 text-[#004175] px-2 py-0.5 rounded text-[10px] font-bold uppercase z-10 flex items-center gap-1.5">
               English
               {isTranslating && (
-                <span className="text-emerald-600 font-semibold normal-case animate-pulse">Translating...</span>
+                <span className="text-emerald-600 font-semibold normal-case animate-pulse">
+                  Translating ({translationEngine === "deepl" ? "DeepL" : "Google"})...
+                </span>
               )}
             </div>
             <textarea
               value={textEn}
-              onChange={(e) => setTextEn(e.target.value)}
+              onChange={(e) => {
+                isUserEditingIdRef.current = false;
+                setTextEn(e.target.value);
+              }}
               disabled={controlsLocked}
               placeholder="Enter English announcement text here..."
               className="w-full flex-1 p-3 sm:p-4 pt-8 sm:pt-10 bg-gray-50 border border-gray-200 rounded-xl resize-none text-gray-800 text-sm sm:text-base 
@@ -311,8 +437,8 @@ export function InputArea() {
           </span>
         </div>
 
-        <div className="mt-3 sm:mt-4 lg:mt-5 flex flex-col gap-3 sm:gap-3 lg:gap-4 border-t border-gray-100 pt-3 sm:pt-4 lg:pt-5 xl:flex-row xl:items-center xl:justify-between">
-          <div className="flex flex-row flex-wrap w-full gap-2 sm:gap-3 lg:gap-4 xl:w-auto xl:flex xl:flex-wrap xl:items-center">
+        <div className="mt-3 sm:mt-4 flex flex-col gap-3 border-t border-gray-100 pt-3 sm:pt-4 md:flex-row md:items-center md:justify-between shrink-0">
+          <div className="flex flex-row flex-wrap w-full gap-2 sm:gap-3 md:w-auto md:flex md:flex-wrap md:items-center">
             <div className="flex items-center gap-1.5 sm:gap-2">
               <span className="text-[9px] sm:text-[10px] font-bold text-gray-400 uppercase tracking-wider">ID:</span>
               <div className="grid grid-cols-2 gap-0.5 rounded-lg bg-gray-100 p-0.5">
@@ -367,7 +493,7 @@ export function InputArea() {
             </div>
           </div>
 
-          <div className="flex flex-col gap-2 sm:gap-2.5 w-full min-w-0 xl:ml-auto xl:max-w-[320px] sm:flex-row">
+          <div className="flex flex-row gap-2 sm:gap-2.5 w-full min-w-0 md:ml-auto md:w-auto md:min-w-[260px] lg:min-w-[300px]">
             {/* Save to Library Button */}
             <div className="flex-1">
               {alreadySaved ? (
@@ -507,7 +633,7 @@ export function InputArea() {
 
       {/* Save Modal */}
       <AnimatePresence>
-        {isSaveModalOpen && (
+        {isSaveModalOpen && !saveConflict && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
             <motion.div 
               initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
@@ -520,8 +646,8 @@ export function InputArea() {
               exit={{ opacity: 0, scale: 0.95, y: 20 }}
               className="relative w-full max-w-md bg-white rounded-2xl shadow-2xl p-6 overflow-hidden"
             >
-              <h3 className="font-display text-2xl font-bold text-[#004175] mb-2">Save Announcement</h3>
-              <p className="text-gray-500 text-sm mb-6">Give your announcement a recognizable title to easily find it later.</p>
+              <h3 className="font-display text-2xl font-bold text-[#004175] mb-2">Simpan Naskah</h3>
+              <p className="text-gray-500 text-sm mb-6">Beri judul pengumuman agar mudah ditemukan kembali di pustaka.</p>
               
               <form onSubmit={handleSave}>
                 <input
@@ -529,20 +655,135 @@ export function InputArea() {
                   autoFocus
                   value={saveTitle}
                   onChange={(e) => setSaveTitle(e.target.value)}
-                  placeholder="e.g., Morning Greeting"
+                  placeholder="Contoh: Pengumuman Barang Hilang"
                   className="w-full px-4 py-3 rounded-xl bg-gray-50 border border-gray-200 text-gray-800 focus:outline-none focus:ring-2 focus:ring-[#004175]/20 focus:border-[#004175]/50 transition-all mb-6"
                 />
                 <div className="flex justify-end gap-3">
-                  <button type="button" onClick={() => setIsSaveModalOpen(false)} className="px-5 py-2.5 rounded-xl font-semibold text-gray-500 hover:bg-gray-100 transition-colors">Cancel</button>
+                  <button type="button" onClick={() => setIsSaveModalOpen(false)} className="px-5 py-2.5 rounded-xl font-semibold text-gray-500 hover:bg-gray-100 transition-colors">Batal</button>
                   <button 
                     type="submit" 
-                    disabled={controlsLocked || !saveTitle.trim() || createAnnouncement.isPending}
+                    disabled={controlsLocked || !saveTitle.trim() || createAnnouncement.isPending || updateAnnouncement.isPending}
                     className="px-6 py-2.5 rounded-xl font-semibold bg-[#004175] text-white shadow-lg shadow-[#004175]/20 hover:bg-[#003159] disabled:opacity-50 transition-all"
                   >
-                    {createAnnouncement.isPending ? 'Saving...' : 'Save'}
+                    {createAnnouncement.isPending ? 'Menyimpan...' : 'Simpan'}
                   </button>
                 </div>
               </form>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Save Duplicate Conflict Modal */}
+      <AnimatePresence>
+        {saveConflict && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <motion.div
+              initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+              className="absolute inset-0 bg-gray-900/40 backdrop-blur-sm"
+              onClick={() => setSaveConflict(null)}
+            />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              className="relative w-full max-w-lg bg-white rounded-3xl shadow-2xl overflow-hidden border border-gray-100"
+            >
+              <div className="bg-gradient-to-br from-[#004175] via-[#003866] to-[#002a4d] p-6 text-white relative overflow-hidden">
+                <div className="absolute top-0 right-0 w-32 h-32 bg-[#F9BB00]/10 rounded-full -mr-10 -mt-10 blur-2xl pointer-events-none" />
+                <div className="flex items-start justify-between gap-3 relative z-10">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2.5 bg-white/10 text-[#F9BB00] rounded-xl backdrop-blur-sm">
+                      <AlertTriangle className="w-6 h-6" />
+                    </div>
+                    <div>
+                      <h3 className="font-display text-xl font-bold">Naskah Serupa Ditemukan</h3>
+                      <p className="text-white/70 text-xs mt-0.5">
+                        Naskah dengan judul atau isi serupa sudah terdaftar di Pustaka
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setSaveConflict(null)}
+                    disabled={createAnnouncement.isPending || updateAnnouncement.isPending}
+                    title="Tutup dialog"
+                    className="p-1.5 rounded-lg text-white/60 hover:text-white hover:bg-white/10 transition-colors"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+              </div>
+
+              <div className="p-6 space-y-4">
+                <div className="bg-[#004175]/5 border border-[#004175]/15 rounded-2xl p-4">
+                  <div className="flex items-center justify-between mb-2">
+                    <p className="text-xs font-bold text-[#004175] uppercase tracking-wider">Naskah yang sudah ada di Pustaka:</p>
+                    <span className="text-[10px] bg-blue-50 text-[#004175] border border-blue-200/60 px-2 py-0.5 rounded-md font-semibold">
+                      {saveConflict.reason}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2 text-xs text-gray-700 bg-white px-3 py-2 rounded-lg border border-gray-200/80 shadow-xs">
+                    <span className="w-1.5 h-1.5 rounded-full bg-[#F9BB00] shrink-0" />
+                    <span className="font-semibold text-gray-800 truncate">{saveConflict.existing.title}</span>
+                  </div>
+                </div>
+
+                <p className="text-xs font-bold text-gray-500 uppercase tracking-wider">
+                  Pilih tindakan penyimpanan:
+                </p>
+
+                <div className="space-y-2.5">
+                  <button
+                    type="button"
+                    onClick={() => void executeSaveConflictStrategy("overwrite")}
+                    disabled={createAnnouncement.isPending || updateAnnouncement.isPending}
+                    className="w-full flex items-start gap-3.5 p-3.5 bg-white hover:bg-blue-50/50 border border-gray-200 hover:border-[#004175] text-left rounded-xl transition-all group disabled:opacity-50 shadow-xs hover:shadow-sm"
+                  >
+                    <div className="p-2 bg-[#004175] text-white rounded-lg group-hover:scale-105 transition-transform shrink-0 mt-0.5 shadow-sm">
+                      <RefreshCw className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="font-bold text-sm text-[#004175]">1. Timpa Naskah Lama</span>
+                        <span className="text-[10px] bg-[#F9BB00] text-[#004175] px-2 py-0.5 rounded-full font-black">Perbarui</span>
+                      </div>
+                      <p className="text-xs text-gray-500 mt-0.5 leading-relaxed">
+                        Perbarui naskah <span className="font-semibold text-gray-700">"{saveConflict.existing.title}"</span> di Pustaka dengan isi dan pengaturan suara saat ini.
+                      </p>
+                    </div>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => void executeSaveConflictStrategy("keep-both")}
+                    disabled={createAnnouncement.isPending || updateAnnouncement.isPending}
+                    className="w-full flex items-start gap-3.5 p-3.5 bg-white hover:bg-blue-50/50 border border-gray-200 hover:border-[#004175] text-left rounded-xl transition-all group disabled:opacity-50 shadow-xs hover:shadow-sm"
+                  >
+                    <div className="p-2 bg-[#004175]/10 text-[#004175] group-hover:bg-[#004175] group-hover:text-white rounded-lg group-hover:scale-105 transition-all shrink-0 mt-0.5 shadow-sm">
+                      <Copy className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="font-bold text-sm text-gray-800 group-hover:text-[#004175] transition-colors">2. Simpan Sebagai Salinan Baru</span>
+                        <span className="text-[10px] bg-blue-100 text-[#004175] px-2 py-0.5 rounded-full font-bold">Simpan Keduanya</span>
+                      </div>
+                      <p className="text-xs text-gray-500 mt-0.5 leading-relaxed">
+                        Naskah lama tetap utuh, dan naskah ini disimpan sebagai item baru dengan akhiran <span className="font-semibold text-[#004175]">(Salinan)</span>.
+                      </p>
+                    </div>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setSaveConflict(null)}
+                    disabled={createAnnouncement.isPending || updateAnnouncement.isPending}
+                    className="w-full py-2.5 rounded-xl font-bold text-gray-500 hover:text-[#004175] hover:bg-gray-100 border border-gray-200 transition-colors text-xs text-center mt-2"
+                  >
+                    Kembali &amp; Ubah Judul Naskah
+                  </button>
+                </div>
+              </div>
             </motion.div>
           </div>
         )}

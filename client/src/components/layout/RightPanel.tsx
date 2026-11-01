@@ -1,6 +1,6 @@
 import { Star, PlayCircle, Search, Clock, FileText, CalendarClock, Megaphone, ListOrdered, X, Trash2 } from "lucide-react";
 import { useState, useEffect } from "react";
-import { motion } from "framer-motion";
+import { motion, AnimatePresence } from "framer-motion";
 import { useAnnouncements } from "@/hooks/use-announcements";
 import { useSchedules } from "@/hooks/use-schedules";
 import { useAppContext } from "@/context/AppContext";
@@ -43,12 +43,59 @@ function RealtimeClock() {
   );
 }
 
-export function RightPanel() {
+interface RightPanelProps {
+  /** Status drawer untuk layar < xl (dikendalikan dari Dashboard) */
+  drawerOpen?: boolean;
+  onDrawerOpenChange?: (open: boolean) => void;
+}
+
+/** Jam ringkas untuk header Dashboard saat panel kanan tersembunyi (< xl). */
+export function CompactClock({ className = "" }: { className?: string }) {
+  const [now, setNow] = useState(new Date());
+
+  useEffect(() => {
+    const timer = setInterval(() => setNow(new Date()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const hh = now.getHours().toString().padStart(2, "0");
+  const mm = now.getMinutes().toString().padStart(2, "0");
+  const ss = now.getSeconds().toString().padStart(2, "0");
+  const dateStr = now.toLocaleDateString("id-ID", { weekday: "short", day: "numeric", month: "short" });
+
+  return (
+    <div
+      className={`flex items-center gap-2 px-3 sm:px-4 py-1.5 sm:py-2 rounded-2xl bg-gradient-to-br from-[#004175] to-[#002a4d] text-white shadow-sm ${className}`}
+      title={now.toLocaleDateString("id-ID", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}
+    >
+      <Clock className="w-3.5 h-3.5 text-[#F9BB00] shrink-0" />
+      <span className="font-display font-black text-sm tabular-nums leading-none">
+        {hh}<span className="text-[#F9BB00] animate-pulse">:</span>{mm}
+        <span className="text-[10px] text-white/40 ml-1">{ss}</span>
+      </span>
+      <span className="hidden md:inline text-[10px] font-semibold text-white/50 leading-none border-l border-white/15 pl-2">
+        {dateStr}
+      </span>
+    </div>
+  );
+}
+
+export function RightPanel({ drawerOpen = false, onDrawerOpenChange }: RightPanelProps) {
   const { data: announcements = [], isLoading } = useAnnouncements();
   const { data: schedules = [] } = useSchedules();
   const { setTextId, setTextEn, setVoice, setVoiceEn, isPreparing, announcementQueue, removeFromQueue, clearQueue } = useAppContext();
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<"all" | "favorites">("all");
+  const setDrawerOpen = (open: boolean) => onDrawerOpenChange?.(open);
+
+  // Tutup drawer dengan tombol Escape
+  useEffect(() => {
+    if (!drawerOpen) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setDrawerOpen(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [drawerOpen]);
 
   const favorites = announcements.filter(a => a.isFavorite);
   const waitingSchedules = schedules.filter((s: any) => s.status === "Waiting");
@@ -66,14 +113,17 @@ export function RightPanel() {
     const voiceParts = (ann.voice || "Pria").split("/");
     setVoice(voiceParts[0]);
     setVoiceEn(voiceParts[1] || voiceParts[0]);
+    setDrawerOpen(false); // tutup drawer di layar kecil setelah template dipilih
   };
 
-  return (
-    <aside className="hidden lg:flex w-[300px] h-full bg-gray-50/80 border-l border-gray-200/60 flex-col shrink-0 z-10 overflow-hidden">
-      {/* Clock */}
-      <div className="p-4 pb-3 shrink-0">
-        <RealtimeClock />
-      </div>
+  const renderPanelBody = (showClock: boolean) => (
+    <>
+      {/* Clock (hanya di panel permanen; di drawer tidak perlu) */}
+      {showClock && (
+        <div className="p-4 pb-3 shrink-0">
+          <RealtimeClock />
+        </div>
+      )}
 
       {/* Stats Row */}
       <div className="px-4 pb-3 shrink-0">
@@ -242,6 +292,62 @@ export function RightPanel() {
           )}
         </div>
       </div>
-    </aside>
+    </>
+  );
+
+  return (
+    <>
+      {/* Layar lebar (>= xl): panel permanen di kanan */}
+      <aside className="hidden xl:flex w-[270px] 2xl:w-[300px] h-full bg-gray-50/80 border-l border-gray-200/60 flex-col shrink-0 z-10 overflow-hidden">
+        {renderPanelBody(true)}
+      </aside>
+
+      {/* Layar kecil (< xl): drawer, dibuka dari tombol "Template" di header Dashboard */}
+      <AnimatePresence>
+        {drawerOpen && (
+          <div className="xl:hidden absolute inset-0 z-50 flex justify-end overflow-hidden">
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="absolute inset-0 bg-black/30 backdrop-blur-[1px]"
+              onClick={() => setDrawerOpen(false)}
+            />
+            <motion.aside
+              initial={{ x: "100%" }}
+              animate={{ x: 0 }}
+              exit={{ x: "100%" }}
+              transition={{ type: "tween", duration: 0.22 }}
+              className="relative w-full sm:w-[300px] h-full bg-gray-50 border-l border-gray-200/60 flex flex-col overflow-hidden shadow-2xl"
+              role="dialog"
+              aria-label="Template Pengumuman"
+            >
+              {/* Drawer Header */}
+              <div className="flex items-center justify-between gap-3 px-4 py-3 bg-[#004175] text-white shrink-0">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <div className="w-8 h-8 rounded-lg bg-white/10 flex items-center justify-center shrink-0">
+                    <Megaphone className="w-4 h-4 text-[#F9BB00]" />
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-sm font-black leading-tight">Template Pengumuman</p>
+                    <p className="text-[10px] text-white/60 leading-tight">Pilih untuk memuat ke editor</p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setDrawerOpen(false)}
+                  aria-label="Tutup panel"
+                  className="p-2 rounded-lg hover:bg-white/10 text-white/80 hover:text-white transition-colors shrink-0"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+              <div className="h-1 shrink-0" />
+              {renderPanelBody(true)}
+            </motion.aside>
+          </div>
+        )}
+      </AnimatePresence>
+    </>
   );
 }

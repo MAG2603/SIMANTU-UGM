@@ -16,40 +16,44 @@ export function Sidebar() {
 
   return (
     <>
-    <aside className="w-full md:w-24 lg:w-64 h-auto md:h-full ugm-gradient text-white flex flex-col items-center lg:items-start py-4 md:py-8 transition-all duration-300 z-10 shrink-0">
-      <div className="px-4 lg:px-5 mb-3 md:mb-10 w-full">
-        <div className="flex items-center gap-3 justify-center lg:justify-start">
-          <img src="/logo_aplikasi.png" alt="SIMANTU" className="w-10 h-10 rounded-xl object-contain shadow-lg shadow-black/20" />
-          <div className="hidden lg:block leading-none">
-            <h1 className="font-display font-black text-[15px] tracking-wide text-white">
+    <aside className="w-full md:w-20 xl:w-60 h-auto md:h-full ugm-gradient text-white flex flex-row md:flex-col items-center justify-between md:justify-start xl:items-start px-3 py-2.5 md:px-0 md:py-6 transition-all duration-300 z-10 shrink-0 gap-2">
+      <div className="px-1 md:px-3 xl:px-5 md:mb-6 xl:mb-8 w-auto md:w-full shrink-0">
+        <div className="flex items-center gap-2.5 justify-center xl:justify-start">
+          <img src="/logo_aplikasi.png" alt="SIMANTU" className="w-9 h-9 md:w-10 md:h-10 rounded-xl object-contain shadow-lg shadow-black/20 shrink-0" />
+          <div className="hidden sm:block md:hidden xl:block leading-none">
+            <h1 className="font-display font-black text-sm xl:text-[15px] tracking-wide text-white">
               SIMANTU<span className="text-[#F9BB00]">.</span>
             </h1>
-            <p className="text-[8px] font-semibold text-white/50 uppercase tracking-[0.12em] mt-1">
+            <p className="text-[8px] font-semibold text-white/50 uppercase tracking-[0.12em] mt-1 hidden xl:block">
               Perpustakaan &amp; Arsip UGM
             </p>
           </div>
         </div>
       </div>
 
-      <nav className="flex-1 w-full flex flex-row md:flex-col items-center md:items-stretch gap-2 px-3 lg:px-4 overflow-x-auto md:overflow-visible pb-1 md:pb-0">
+      <nav className="flex-1 md:w-full flex flex-row md:flex-col items-center justify-center md:justify-start md:items-stretch gap-1 sm:gap-1.5 md:gap-2 px-1 md:px-2.5 xl:px-4 overflow-x-auto md:overflow-visible">
         {navItems.map((item, idx) => {
           const Icon = item.icon;
           const isActive = location === item.path;
           return (
             <Link key={idx} href={item.path}>
               <button
+                title={item.label}
                 className={`
-                  flex items-center justify-center lg:justify-start gap-4 w-auto md:w-full min-w-[52px] md:min-w-0 p-3 lg:px-4 lg:py-3 rounded-xl transition-all duration-200 group relative
+                  flex items-center justify-center xl:justify-start gap-2 xl:gap-3.5 w-auto md:w-full min-w-[42px] sm:min-w-[48px] md:min-w-0 p-2 sm:p-2.5 md:p-3 xl:px-4 xl:py-3 rounded-xl transition-all duration-200 group relative
                   ${isActive 
                     ? 'bg-white/10 text-white' 
                     : 'text-white/60 hover:text-white hover:bg-white/5'}
                 `}
               >
                 {isActive && (
-                  <div className="absolute left-0 top-1/2 -translate-y-1/2 w-1.5 h-8 bg-[#F9BB00] rounded-r-full shadow-[0_0_10px_rgba(249,187,0,0.5)]" />
+                  <div className="hidden md:block absolute left-0 top-1/2 -translate-y-1/2 w-1.5 h-7 bg-[#F9BB00] rounded-r-full shadow-[0_0_10px_rgba(249,187,0,0.5)]" />
                 )}
-                <Icon className={`w-6 h-6 shrink-0 transition-transform duration-200 ${isActive ? 'scale-110 text-[#F9BB00]' : 'group-hover:scale-110'}`} />
-                <span className="font-medium text-sm hidden lg:block">{item.label}</span>
+                {isActive && (
+                  <div className="md:hidden absolute bottom-0 left-1/2 -translate-x-1/2 h-1 w-6 bg-[#F9BB00] rounded-t-full shadow-[0_0_8px_rgba(249,187,0,0.5)]" />
+                )}
+                <Icon className={`w-5 h-5 md:w-6 md:h-6 shrink-0 transition-transform duration-200 ${isActive ? 'scale-110 text-[#F9BB00]' : 'group-hover:scale-110'}`} />
+                <span className="font-medium text-xs xl:text-sm hidden xl:block truncate">{item.label}</span>
               </button>
             </Link>
           );
@@ -57,14 +61,15 @@ export function Sidebar() {
 
       </nav>
 
-      <div className="mt-2 md:mt-auto px-0 lg:px-8 w-full flex flex-row md:flex-col items-center lg:items-start justify-center md:justify-start gap-3 pb-1 md:pb-0">
+      <div className="md:mt-auto px-1 md:px-2.5 xl:px-6 w-auto md:w-full flex flex-row md:flex-col items-center xl:items-start justify-center md:justify-start gap-2 shrink-0">
         <div className="hidden md:block w-full h-px bg-white/10" />
         <button
           onClick={() => setShowAbout(true)}
-          className="flex items-center gap-3 w-auto md:w-full p-2 lg:px-3 lg:py-2 rounded-lg transition-all duration-200 text-white/40 hover:text-white/70 hover:bg-white/5"
+          title="Tentang Aplikasi"
+          className="flex items-center justify-center xl:justify-start gap-2.5 w-auto md:w-full p-2 xl:px-3 xl:py-2 rounded-lg transition-all duration-200 text-white/50 hover:text-white/80 hover:bg-white/5"
         >
           <Info className="w-4 h-4 shrink-0" />
-          <span className="font-medium text-xs hidden lg:block">About</span>
+          <span className="font-medium text-xs hidden xl:block">About</span>
         </button>
       </div>
     </aside>

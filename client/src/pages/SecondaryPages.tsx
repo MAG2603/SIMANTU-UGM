@@ -4,13 +4,14 @@ import { useSchedules, useCreateSchedule, useUpdateSchedule, useDeleteSchedule }
 import { useAnnouncements, useCreateAnnouncement, useUpdateAnnouncement, useDeleteAnnouncement } from "@/hooks/use-announcements";
 import { useAppContext } from "@/context/AppContext";
 import { useState, useRef, useEffect, useMemo } from "react";
-import { Clock, Plus, Pencil, Trash2, Star, X, Save, ListTodo, CheckCircle2, ChevronUp, ChevronDown, AlarmClock, Repeat, Speaker, SlidersHorizontal, Languages, Bell, Upload, ToggleLeft, ToggleRight, RefreshCw, Download, FileInput, FileCheck2, Mic, Eye, EyeOff, AlertTriangle, ShieldCheck, Lock, Copy, XCircle, History, Play, Music, Square, Disc, Pause, Volume2 } from "lucide-react";
+import { Clock, Plus, Pencil, Trash2, Star, X, Save, ListTodo, CheckCircle2, ChevronUp, ChevronDown, AlarmClock, Repeat, Speaker, SlidersHorizontal, Languages, Bell, Upload, ToggleLeft, ToggleRight, RefreshCw, Download, FileInput, FileCheck2, Mic, AlertTriangle, Copy, XCircle, History, Play, Music, Square, Disc, Pause, Volume2 } from "lucide-react";
 import { SpellingRule, BellItem, getDailyPlaybackLogs, saveDailyPlaybackLog, DailyPlaybackLog } from "@/context/AppContext";
 import { format } from "date-fns";
 import { motion, AnimatePresence } from "framer-motion";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { APP_VERSION } from "../lib/appVersion";
 import { useToast } from "@/hooks/use-toast";
+import { saveMusicTrack, processAudioFile, clearAllMusicTracks, MusicTrack } from "@/lib/musicStorage";
 
 // ==================== LIBRARY PAGE (CRUD Templates — Table) ====================
 
@@ -22,7 +23,9 @@ export default function LibraryPage() {
   const {
     autoTranslateEnabled,
     setAutoTranslateEnabled,
+    translationEngine,
     musicTracks,
+    loadMusicTracks,
     addMusicTrack,
     removeMusicTrack,
     previewMusicTrack,
@@ -31,26 +34,37 @@ export default function LibraryPage() {
   } = useAppContext();
 
   const [activeTab, setActiveTab] = useState<'templates' | 'music'>('templates');
-  const [deleteMusicTarget, setDeleteMusicTarget] = useState<import("@/lib/musicStorage").MusicTrack | null>(null);
+  const [deleteMusicTarget, setDeleteMusicTarget] = useState<MusicTrack | null>(null);
   const musicInputRef = useRef<HTMLInputElement>(null);
+  const musicImportInputRef = useRef<HTMLInputElement>(null);
 
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [form, setForm] = useState({ title: "", contentId: "", contentEn: "", voiceId: "Pria", voiceEn: "Pria" });
+  const [formConflict, setFormConflict] = useState<{ existing: any; reason: string } | null>(null);
   const [deleteAnnId, setDeleteAnnId] = useState<number | null>(null);
 
   // --- Auto-translate debounce for library modal ---
   const [isTranslatingLib, setIsTranslatingLib] = useState(false);
   const translateAbortLibRef = useRef<AbortController | null>(null);
   const lastTranslatedLibRef = useRef<string>("");
+  const isUserEditingLibIdRef = useRef<boolean>(false);
 
   useEffect(() => {
     if (!autoTranslateEnabled || !showForm) return;
     const trimmed = form.contentId.trim();
     if (!trimmed) return;
+
+    // Only translate if user actually edited the Indonesian textarea
+    if (!isUserEditingLibIdRef.current) {
+      lastTranslatedLibRef.current = trimmed;
+      return;
+    }
+
     if (trimmed === lastTranslatedLibRef.current) return;
 
     const timer = setTimeout(async () => {
+      isUserEditingLibIdRef.current = false;
       if (translateAbortLibRef.current) translateAbortLibRef.current.abort();
       const controller = new AbortController();
       translateAbortLibRef.current = controller;
@@ -60,7 +74,7 @@ export default function LibraryPage() {
         const res = await fetch("/api/translate", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text: trimmed, from: "id", to: "en" }),
+          body: JSON.stringify({ text: trimmed, from: "id", to: "en", engine: translationEngine }),
           signal: controller.signal,
         });
         if (!res.ok) throw new Error("Translate failed");
@@ -81,11 +95,12 @@ export default function LibraryPage() {
     }, 1000);
 
     return () => clearTimeout(timer);
-  }, [form.contentId, autoTranslateEnabled, showForm]);
+  }, [form.contentId, autoTranslateEnabled, showForm, translationEngine]);
 
   const openCreate = () => {
     setEditingId(null);
     setForm({ title: "", contentId: "", contentEn: "", voiceId: "Pria", voiceEn: "Pria" });
+    isUserEditingLibIdRef.current = false;
     lastTranslatedLibRef.current = "";  // Reset translate tracking for new form
     setShowForm(true);
   };
@@ -94,26 +109,117 @@ export default function LibraryPage() {
     setEditingId(ann.id);
     const voiceParts = (ann.voice || "Pria").split("/");
     setForm({ title: ann.title, contentId: ann.contentId, contentEn: ann.contentEn, voiceId: voiceParts[0], voiceEn: voiceParts[1] || voiceParts[0] });
+    isUserEditingLibIdRef.current = false;
     lastTranslatedLibRef.current = ann.contentId.trim();  // Prevent auto-translate from overwriting existing English text
     setShowForm(true);
   };
 
+  const getUniqueTemplateCopyTitle = (baseTitle: string) => {
+    const existingLower = new Set(announcements.map((a: any) => a.title.trim().toLowerCase()));
+    let candidate = `${baseTitle.trim()} (Salinan)`;
+    let idx = 2;
+    while (existingLower.has(candidate.toLowerCase())) {
+      candidate = `${baseTitle.trim()} (Salinan ${idx})`;
+      idx++;
+    }
+    return candidate;
+  };
+
+  const getUniqueMusicCopyName = (baseName: string) => {
+    const existingLower = new Set(musicTracks.map((m) => m.name.trim().toLowerCase()));
+    let candidate = `${baseName.trim()} (Salinan)`;
+    let idx = 2;
+    while (existingLower.has(candidate.toLowerCase())) {
+      candidate = `${baseName.trim()} (Salinan ${idx})`;
+      idx++;
+    }
+    return candidate;
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!form.title.trim()) return;
+    const trimmedTitle = form.title.trim();
+    if (!trimmedTitle) return;
+
+    const titleLower = trimmedTitle.toLowerCase();
+    const contentLower = form.contentId.trim().toLowerCase();
+
+    const matched = announcements.find((a: any) => {
+      if (editingId && a.id === editingId) return false;
+      const isTitleMatch = a.title.trim().toLowerCase() === titleLower;
+      const isContentMatch = Boolean(contentLower && a.contentId?.trim().toLowerCase() === contentLower);
+      return isTitleMatch || isContentMatch;
+    });
+
+    if (matched) {
+      const isTitleMatch = matched.title.trim().toLowerCase() === titleLower;
+      const isContentMatch = Boolean(contentLower && matched.contentId?.trim().toLowerCase() === contentLower);
+      const reason = isTitleMatch && isContentMatch
+        ? "Judul & Naskah sama"
+        : isTitleMatch
+          ? "Judul sama"
+          : "Isi naskah sama";
+      setFormConflict({ existing: matched, reason });
+      return;
+    }
 
     if (editingId) {
-      await updateAnnouncement.mutateAsync({ id: editingId, title: form.title, contentId: form.contentId, contentEn: form.contentEn, voice: `${form.voiceId}/${form.voiceEn}` });
+      await updateAnnouncement.mutateAsync({ id: editingId, title: trimmedTitle, contentId: form.contentId, contentEn: form.contentEn, voice: `${form.voiceId}/${form.voiceEn}` });
     } else {
-      await createAnnouncement.mutateAsync({ title: form.title, contentId: form.contentId, contentEn: form.contentEn, voice: `${form.voiceId}/${form.voiceEn}`, isFavorite: false });
+      await createAnnouncement.mutateAsync({ title: trimmedTitle, contentId: form.contentId, contentEn: form.contentEn, voice: `${form.voiceId}/${form.voiceEn}`, isFavorite: false });
     }
     setShowForm(false);
   };
 
-  // --- Export / Import handlers ---
+  const executeFormConflictStrategy = async (strategy: 'overwrite' | 'keep-both') => {
+    if (!formConflict) return;
+    const trimmedTitle = form.title.trim();
+    const { existing } = formConflict;
+
+    try {
+      if (strategy === 'overwrite') {
+        await updateAnnouncement.mutateAsync({
+          id: existing.id,
+          title: trimmedTitle,
+          contentId: form.contentId,
+          contentEn: form.contentEn,
+          voice: `${form.voiceId}/${form.voiceEn}`,
+          isFavorite: existing.isFavorite ?? false,
+        });
+        toast({ title: "✅ Template Diperbarui", description: `Template "${existing.title}" telah ditimpa.` });
+      } else {
+        const copyTitle = getUniqueTemplateCopyTitle(trimmedTitle);
+        if (editingId) {
+          await updateAnnouncement.mutateAsync({
+            id: editingId,
+            title: copyTitle,
+            contentId: form.contentId,
+            contentEn: form.contentEn,
+            voice: `${form.voiceId}/${form.voiceEn}`,
+          });
+        } else {
+          await createAnnouncement.mutateAsync({
+            title: copyTitle,
+            contentId: form.contentId,
+            contentEn: form.contentEn,
+            voice: `${form.voiceId}/${form.voiceEn}`,
+            isFavorite: false,
+          });
+        }
+        toast({ title: "✅ Disimpan Sebagai Salinan", description: `Template disimpan dengan judul "${copyTitle}".` });
+      }
+      setFormConflict(null);
+      setShowForm(false);
+    } catch (err: any) {
+      toast({ title: "Gagal Menyimpan", description: err?.message || "Terjadi kesalahan.", variant: "destructive" });
+    }
+  };
+
+  // --- Export / Import handlers (Templates & Music) ---
   const { toast } = useToast();
   const importInputRef = useRef<HTMLInputElement>(null);
   const [isImporting, setIsImporting] = useState(false);
+  const [musicImportConflicts, setMusicImportConflicts] = useState<{ duplicates: any[]; newItems: any[] } | null>(null);
 
   const handleExport = () => {
     if (announcements.length === 0) {
@@ -137,6 +243,167 @@ export default function LibraryPage() {
     toast({ title: "✅ Export Berhasil", description: `${exportData.length} template telah diekspor.` });
   };
 
+  const handleExportMusic = () => {
+    if (musicTracks.length === 0) {
+      toast({ title: "Tidak ada musik", description: "Belum ada lagu di pustaka untuk diekspor.", variant: "destructive" });
+      return;
+    }
+    const exportData = musicTracks.map((m) => ({
+      name: m.name,
+      size: m.size,
+      duration: m.duration,
+      data: m.data,
+      createdAt: m.createdAt,
+    }));
+    const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `simantu-music-${format(new Date(), "yyyy-MM-dd")}.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+    toast({ title: "✅ Export Musik Berhasil", description: `${exportData.length} lagu penutup telah diekspor.` });
+  };
+
+  const processMusicItemsForImport = async (rawItems: any[]) => {
+    const existingNames = new Set(musicTracks.map((m) => m.name.trim().toLowerCase()));
+    const duplicates: any[] = [];
+    const newItems: any[] = [];
+
+    for (const item of rawItems) {
+      if (!item || typeof item.name !== "string" || typeof item.data !== "string") continue;
+      const isNameMatch = existingNames.has(item.name.trim().toLowerCase());
+      if (isNameMatch) {
+        duplicates.push({
+          ...item,
+          _conflictReason: "Nama lagu sama",
+        });
+      } else {
+        newItems.push(item);
+      }
+    }
+
+    if (duplicates.length === 0 && newItems.length === 0) {
+      throw new Error("Tidak ada data lagu valid ditemukan di dalam file.");
+    }
+
+    if (duplicates.length > 0) {
+      setMusicImportConflicts({ duplicates, newItems });
+    } else {
+      await executeMusicImportStrategy('skip', newItems);
+    }
+  };
+
+  const executeMusicImportStrategy = async (strategy: 'overwrite' | 'keep-both' | 'skip', directItems?: any[]) => {
+    setIsImporting(true);
+    try {
+      let added = 0;
+      let overwritten = 0;
+      let duplicated = 0;
+      let skipped = 0;
+
+      const itemsToAdd = directItems || musicImportConflicts?.newItems || [];
+      const duplicateItems = directItems ? [] : (musicImportConflicts?.duplicates || []);
+
+      for (const item of itemsToAdd) {
+        await saveMusicTrack({
+          id: `music-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          name: item.name.trim(),
+          size: Number(item.size) || Math.round((item.data.length * 3) / 4),
+          duration: item.duration,
+          data: item.data,
+          createdAt: item.createdAt || new Date().toISOString(),
+        });
+        added++;
+      }
+
+      if (strategy === 'overwrite') {
+        for (const item of duplicateItems) {
+          const existing = musicTracks.find(
+            (m) => m.name.trim().toLowerCase() === item.name.trim().toLowerCase()
+          );
+          if (existing) {
+            await saveMusicTrack({
+              id: existing.id,
+              name: item.name.trim(),
+              size: Number(item.size) || Math.round((item.data.length * 3) / 4),
+              duration: item.duration ?? existing.duration,
+              data: item.data,
+              createdAt: new Date().toISOString(),
+            });
+            overwritten++;
+          } else {
+            await saveMusicTrack({
+              id: `music-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+              name: item.name.trim(),
+              size: Number(item.size) || Math.round((item.data.length * 3) / 4),
+              duration: item.duration,
+              data: item.data,
+              createdAt: new Date().toISOString(),
+            });
+            added++;
+          }
+        }
+      } else if (strategy === 'keep-both') {
+        for (const item of duplicateItems) {
+          const copyName = getUniqueMusicCopyName(item.name);
+          await saveMusicTrack({
+            id: `music-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+            name: copyName,
+            size: Number(item.size) || Math.round((item.data.length * 3) / 4),
+            duration: item.duration,
+            data: item.data,
+            createdAt: new Date().toISOString(),
+          });
+          duplicated++;
+        }
+      } else if (strategy === 'skip') {
+        skipped = duplicateItems.length;
+      }
+
+      await loadMusicTracks();
+
+      const parts: string[] = [];
+      if (added > 0) parts.push(`${added} lagu baru ditambahkan`);
+      if (overwritten > 0) parts.push(`${overwritten} lagu lama diperbarui`);
+      if (duplicated > 0) parts.push(`${duplicated} lagu disimpan sebagai salinan baru`);
+      if (skipped > 0) parts.push(`${skipped} lagu duplikat dilewati`);
+
+      toast({
+        title: "🎵 Import Musik Selesai",
+        description: (parts.join(", ") || "Tidak ada perubahan") + ".",
+      });
+    } catch (err: any) {
+      console.error("[SIMANTU] Music import failed:", err);
+      toast({ title: "Gagal Import Musik", description: err?.message || "Terjadi kesalahan saat menyimpan lagu.", variant: "destructive" });
+    } finally {
+      setIsImporting(false);
+      setMusicImportConflicts(null);
+    }
+  };
+
+  const handleImportMusic = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = "";
+
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text);
+      const rawItems = Array.isArray(parsed)
+        ? parsed
+        : Array.isArray(parsed?.musicTracks)
+          ? parsed.musicTracks
+          : null;
+      if (!rawItems) throw new Error("Format file musik JSON tidak valid");
+
+      await processMusicItemsForImport(rawItems);
+    } catch (err: any) {
+      console.error("[SIMANTU] Music import failed:", err);
+      toast({ title: "Gagal Import Musik", description: err.message || "File JSON musik tidak valid.", variant: "destructive" });
+    }
+  };
+
   // --- Import Conflict Resolution ---
   type ImportConflictAction = 'overwrite' | 'skip' | null;
   const [importConflicts, setImportConflicts] = useState<{ duplicates: any[]; newItems: any[] } | null>(null);
@@ -149,8 +416,20 @@ export default function LibraryPage() {
 
     try {
       const text = await file.text();
-      const imported = JSON.parse(text);
-      if (!Array.isArray(imported)) throw new Error("Format file tidak valid");
+      const parsed = JSON.parse(text);
+      const imported = Array.isArray(parsed)
+        ? parsed
+        : Array.isArray(parsed?.announcements)
+          ? parsed.announcements
+          : null;
+
+      // Auto-detect if user selected a music JSON file while on Templates tab
+      if (Array.isArray(parsed) && parsed.length > 0 && parsed[0]?.name && parsed[0]?.data && !parsed[0]?.title) {
+        await processMusicItemsForImport(parsed);
+        return;
+      }
+
+      if (!imported) throw new Error("Format file tidak valid");
 
       const existingTitles = new Set(announcements.map((a: any) => a.title.trim().toLowerCase()));
       const existingContents = new Set(announcements.map((a: any) => a.contentId?.trim().toLowerCase()).filter(Boolean));
@@ -278,20 +557,20 @@ export default function LibraryPage() {
   };
 
   return (
-    <div className="h-full w-full bg-neutral-900 flex p-2 sm:p-4 font-sans selection:bg-[#F9BB00] selection:text-[#004175]">
-      <div className="flex-1 w-full max-w-[1920px] mx-auto bg-gray-50 rounded-2xl shadow-2xl overflow-hidden flex flex-col md:flex-row relative ring-1 ring-white/10">
+    <div className="h-full w-full bg-neutral-900 flex p-1.5 sm:p-3 lg:p-4 font-sans selection:bg-[#F9BB00] selection:text-[#004175]">
+      <div className="flex-1 w-full max-w-[2560px] mx-auto bg-gray-50 rounded-2xl shadow-2xl overflow-hidden flex flex-col md:flex-row relative ring-1 ring-white/10">
         <Sidebar />
 
-        <main className="flex-1 flex flex-col min-w-0 overflow-hidden relative">
+        <main className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden relative">
           <div className="absolute top-0 right-0 w-64 h-64 bg-blue-500/5 rounded-full -mr-32 -mt-32 blur-3xl pointer-events-none" />
 
-          <header className="min-h-24 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between px-4 sm:px-8 py-4 border-b border-gray-100 bg-white/50 backdrop-blur-md shrink-0 relative z-10">
+          <header className="min-h-20 sm:min-h-24 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between px-4 sm:px-6 lg:px-8 py-3.5 sm:py-4 border-b border-gray-100 bg-white/50 backdrop-blur-md shrink-0 relative z-10">
             <div>
-              <div className="flex items-center gap-2 mb-1">
+              <div className="flex items-center gap-2 mb-0.5 sm:mb-1">
                 <div className="w-2 h-2 rounded-full bg-[#004175]" />
                 <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Pustaka Media</span>
               </div>
-              <h1 className="font-display text-2xl sm:text-3xl font-black text-[#004175] tracking-tight">Announcement Library</h1>
+              <h1 className="font-display text-xl sm:text-2xl lg:text-3xl font-black text-[#004175] tracking-tight">Announcement Library</h1>
               <p className="text-xs text-gray-400 mt-0.5 hidden sm:block">Kelola template siaran dan koleksi musik pengiring jam tutup</p>
             </div>
 
@@ -328,7 +607,30 @@ export default function LibraryPage() {
                 </button>
               </div>
             ) : (
-              <div className="flex items-center gap-2">
+              <div className="flex w-full sm:w-auto items-center gap-2 flex-wrap">
+                <button
+                  onClick={handleExportMusic}
+                  disabled={musicTracks.length === 0}
+                  className="flex items-center gap-1.5 px-3 py-2.5 bg-gray-100 text-gray-600 rounded-xl font-semibold text-sm hover:bg-gray-200 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                  title="Export semua lagu penutup ke file JSON"
+                >
+                  <Download className="w-4 h-4" /> Export
+                </button>
+                <button
+                  onClick={() => musicImportInputRef.current?.click()}
+                  disabled={isImporting}
+                  className="flex items-center gap-1.5 px-3 py-2.5 bg-gray-100 text-gray-600 rounded-xl font-semibold text-sm hover:bg-gray-200 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                  title="Import koleksi lagu dari file JSON"
+                >
+                  <Upload className="w-4 h-4" /> {isImporting ? "Importing..." : "Import"}
+                </button>
+                <input
+                  ref={musicImportInputRef}
+                  type="file"
+                  accept=".json"
+                  className="hidden"
+                  onChange={handleImportMusic}
+                />
                 <input
                   ref={musicInputRef}
                   type="file"
@@ -339,7 +641,15 @@ export default function LibraryPage() {
                     if (!file) return;
                     e.target.value = "";
                     try {
-                      await addMusicTrack(file);
+                      const track = await processAudioFile(file);
+                      const isDup = musicTracks.some(
+                        (m) => m.name.trim().toLowerCase() === track.name.trim().toLowerCase()
+                      );
+                      if (isDup) {
+                        await processMusicItemsForImport([track]);
+                      } else {
+                        await addMusicTrack(file);
+                      }
                     } catch (err: any) {
                       toast({ title: "Gagal Mengunggah Musik", description: err.message || "Pastikan format file audio valid.", variant: "destructive" });
                     }
@@ -347,29 +657,29 @@ export default function LibraryPage() {
                 />
                 <button
                   onClick={() => musicInputRef.current?.click()}
-                  className="flex items-center justify-center gap-2 px-5 py-2.5 bg-indigo-600 text-white rounded-xl font-semibold text-sm hover:bg-indigo-700 transition-colors shadow-lg shadow-indigo-600/20"
+                  className="flex items-center justify-center gap-2 px-5 py-2.5 bg-[#004175] text-white rounded-xl font-semibold text-sm hover:bg-[#003159] transition-colors shadow-lg shadow-[#004175]/20"
                 >
-                  <Upload className="w-4 h-4" /> Upload Lagu (MP3/WAV)
+                  <Plus className="w-4 h-4" /> Upload Lagu (MP3/WAV)
                 </button>
               </div>
             )}
           </header>
 
-          <div className="flex-1 overflow-y-auto p-4 sm:p-8 relative z-10 styled-scrollbar">
+          <div className="flex-1 overflow-y-auto p-3 sm:p-6 lg:p-8 relative z-10 styled-scrollbar">
             <div className="max-w-6xl mx-auto">
               {/* Segmented Pill Tabs */}
-              <div className="flex items-center gap-1.5 p-1 bg-gray-200/60 rounded-2xl w-fit mb-6 border border-gray-200/80">
+              <div className="flex flex-wrap items-center gap-1.5 p-1 bg-gray-200/60 rounded-2xl w-full sm:w-fit mb-5 sm:mb-6 border border-gray-200/80">
                 <button
                   onClick={() => setActiveTab('templates')}
-                  className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${
+                  className={`flex-1 sm:flex-initial justify-center px-3 sm:px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 sm:gap-2 ${
                     activeTab === 'templates'
                       ? 'bg-white text-[#004175] shadow-sm'
                       : 'text-gray-500 hover:text-gray-800'
                   }`}
                 >
-                  <FileInput className="w-3.5 h-3.5" />
-                  Template Pengumuman
-                  <span className={`text-[10px] font-black px-2 py-0.5 rounded-full ${
+                  <FileInput className="w-3.5 h-3.5 shrink-0" />
+                  <span className="truncate">Template Pengumuman</span>
+                  <span className={`text-[10px] font-black px-2 py-0.5 rounded-full shrink-0 ${
                     activeTab === 'templates' ? 'bg-blue-50 text-[#004175]' : 'bg-gray-200 text-gray-600'
                   }`}>
                     {announcements.length}
@@ -378,16 +688,16 @@ export default function LibraryPage() {
 
                 <button
                   onClick={() => setActiveTab('music')}
-                  className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${
+                  className={`flex-1 sm:flex-initial justify-center px-3 sm:px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 sm:gap-2 ${
                     activeTab === 'music'
-                      ? 'bg-white text-indigo-700 shadow-sm'
+                      ? 'bg-white text-[#004175] shadow-sm'
                       : 'text-gray-500 hover:text-gray-800'
                   }`}
                 >
-                  <Music className="w-3.5 h-3.5 text-indigo-600" />
-                  Musik Penutup (Jam Tutup)
-                  <span className={`text-[10px] font-black px-2 py-0.5 rounded-full ${
-                    activeTab === 'music' ? 'bg-indigo-50 text-indigo-700' : 'bg-gray-200 text-gray-600'
+                  <Music className="w-3.5 h-3.5 text-[#004175] shrink-0" />
+                  <span className="truncate">Musik Penutup</span>
+                  <span className={`text-[10px] font-black px-2 py-0.5 rounded-full shrink-0 ${
+                    activeTab === 'music' ? 'bg-blue-50 text-[#004175]' : 'bg-gray-200 text-gray-600'
                   }`}>
                     {musicTracks.length}
                   </span>
@@ -400,12 +710,12 @@ export default function LibraryPage() {
                   {/* Clean Info Banner */}
                   <div className="p-4 sm:p-5 rounded-2xl bg-white border border-gray-200/80 shadow-xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
                     <div className="flex items-center gap-3.5">
-                      <div className="w-10 h-10 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center shrink-0 border border-indigo-100">
+                      <div className="w-10 h-10 rounded-xl bg-blue-50 text-[#004175] flex items-center justify-center shrink-0 border border-blue-100">
                         <Music className="w-5 h-5" />
                       </div>
                       <div>
-                        <h3 className="font-bold text-sm sm:text-base text-gray-900">
-                          Koleksi Lagu Penutup Gedung & Kantor
+                        <h3 className="font-bold text-sm sm:text-base text-[#004175]">
+                          Koleksi Lagu Penutup Gedung &amp; Kantor
                         </h3>
                         <p className="text-xs text-gray-500 mt-0.5">
                           Tersimpan secara lokal di komputer ini. Musik akan berputar otomatis setelah pembacaan pengumuman jam tutup selesai.
@@ -414,7 +724,7 @@ export default function LibraryPage() {
                     </div>
                     <div className="flex items-center gap-2 self-end sm:self-auto shrink-0">
                       <span className="text-[11px] font-bold px-2.5 py-1 rounded-lg bg-emerald-50 text-emerald-700 border border-emerald-200/60">
-                        ✓ Siap Offline & Bebas Iklan
+                        ✓ Siap Offline &amp; Bebas Iklan
                       </span>
                     </div>
                   </div>
@@ -422,16 +732,16 @@ export default function LibraryPage() {
                   {/* Music Track List — Clean Table Format */}
                   {musicTracks.length === 0 ? (
                     <div className="py-16 px-6 text-center rounded-2xl bg-white border border-dashed border-gray-300 shadow-xs">
-                      <div className="w-14 h-14 rounded-2xl bg-indigo-50 text-indigo-600 mx-auto flex items-center justify-center mb-3">
+                      <div className="w-14 h-14 rounded-2xl bg-blue-50 text-[#004175] mx-auto flex items-center justify-center mb-3">
                         <Disc className="w-7 h-7" />
                       </div>
-                      <h4 className="font-bold text-sm sm:text-base text-gray-800">Belum Ada Lagu Tersimpan</h4>
+                      <h4 className="font-bold text-sm sm:text-base text-[#004175]">Belum Ada Lagu Tersimpan</h4>
                       <p className="text-xs text-gray-500 mt-1 max-w-md mx-auto">
-                        Klik tombol <strong>"Upload Lagu (MP3/WAV)"</strong> untuk menambahkan file musik. Lagu akan muncul di daftar pilihan saat menyetel jadwal jam tutup.
+                        Klik tombol <strong>"Upload Lagu (MP3/WAV)"</strong> untuk menambahkan file musik, atau <strong>"Import"</strong> untuk memuat koleksi musik.
                       </p>
                       <button
                         onClick={() => musicInputRef.current?.click()}
-                        className="mt-4 px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs transition-colors inline-flex items-center gap-1.5 shadow-sm"
+                        className="mt-4 px-5 py-2.5 rounded-xl bg-[#004175] hover:bg-[#003159] text-white font-semibold text-xs transition-colors inline-flex items-center gap-1.5 shadow-lg shadow-[#004175]/20"
                       >
                         <Upload className="w-3.5 h-3.5" /> Pilih File Musik Sekarang
                       </button>
@@ -442,11 +752,11 @@ export default function LibraryPage() {
                         <table className="w-full text-left border-collapse">
                           <thead>
                             <tr className="border-b border-gray-100 bg-gray-50/60 text-[10px] font-black uppercase tracking-wider text-gray-400">
-                              <th className="py-3 px-4 w-12 text-center">#</th>
-                              <th className="py-3 px-4">Nama Lagu</th>
-                              <th className="py-3 px-4 w-32 text-center">Durasi</th>
-                              <th className="py-3 px-4 w-28 text-center">Ukuran</th>
-                              <th className="py-3 px-4 w-40 text-right">Aksi</th>
+                              <th className="hidden sm:table-cell py-3 px-3 sm:px-4 w-10 text-center">#</th>
+                              <th className="py-3 px-3 sm:px-4">Nama Lagu</th>
+                              <th className="py-3 px-2 sm:px-4 w-24 sm:w-28 text-center">Durasi</th>
+                              <th className="hidden md:table-cell py-3 px-3 sm:px-4 w-24 text-center">Ukuran</th>
+                              <th className="py-3 px-3 sm:px-4 w-32 sm:w-40 text-right">Aksi</th>
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-gray-100 text-xs">
@@ -455,73 +765,73 @@ export default function LibraryPage() {
                               return (
                                 <tr
                                   key={track.id}
-                                  className={`hover:bg-indigo-50/30 transition-colors ${
-                                    isPreviewing ? 'bg-indigo-50/50' : ''
+                                  className={`hover:bg-blue-50/30 transition-colors ${
+                                    isPreviewing ? 'bg-blue-50/50' : ''
                                   }`}
                                 >
-                                  <td className="py-3 px-4 text-center text-gray-400 font-mono text-[11px]">
+                                  <td className="hidden sm:table-cell py-3 px-3 sm:px-4 text-center text-gray-400 font-mono text-[11px]">
                                     {idx + 1}
                                   </td>
-                                  <td className="py-3 px-4">
-                                    <div className="flex items-center gap-3">
+                                  <td className="py-3 px-3 sm:px-4 max-w-[180px] sm:max-w-xs md:max-w-md">
+                                    <div className="flex items-center gap-2.5 sm:gap-3 min-w-0">
                                       <button
                                         onClick={() => previewMusicTrack(track.id)}
                                         className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 transition-colors ${
                                           isPreviewing
                                             ? 'bg-red-500 text-white shadow-sm'
-                                            : 'bg-indigo-50 text-indigo-700 hover:bg-indigo-100'
+                                            : 'bg-blue-50 text-[#004175] hover:bg-blue-100'
                                         }`}
                                         title={isPreviewing ? "Stop Pratinjau" : "Putar Pratinjau"}
                                       >
                                         {isPreviewing ? (
                                           <Square className="w-3.5 h-3.5 fill-white" />
                                         ) : (
-                                          <Play className="w-3.5 h-3.5 fill-indigo-700" />
+                                          <Play className="w-3.5 h-3.5 fill-[#004175]" />
                                         )}
                                       </button>
-                                      <div className="min-w-0">
-                                        <p className="font-bold text-gray-900 truncate max-w-sm sm:max-w-md" title={track.name}>
+                                      <div className="min-w-0 flex-1">
+                                        <p className="font-bold text-[#004175] truncate" title={track.name}>
                                           {track.name}
                                         </p>
-                                        <span className="text-[10px] text-gray-400">
-                                          Diunggah: {format(new Date(track.createdAt), 'dd MMM yyyy, HH:mm')}
+                                        <span className="text-[10px] text-gray-400 block truncate">
+                                          {format(new Date(track.createdAt), 'dd MMM yyyy, HH:mm')}
                                         </span>
                                       </div>
                                     </div>
                                   </td>
-                                  <td className="py-3 px-4 text-center">
-                                    <span className="font-mono font-bold text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded-md text-[11px]">
+                                  <td className="py-3 px-2 sm:px-4 text-center">
+                                    <span className="font-mono font-bold text-[#004175] bg-blue-50 px-2 py-0.5 rounded-md text-[11px]">
                                       {track.duration
                                         ? `${Math.floor(track.duration / 60)}:${(track.duration % 60).toString().padStart(2, '0')}`
                                         : 'Audio'}
                                     </span>
                                   </td>
-                                  <td className="py-3 px-4 text-center font-mono text-gray-500 text-[11px]">
+                                  <td className="hidden md:table-cell py-3 px-3 sm:px-4 text-center font-mono text-gray-500 text-[11px]">
                                     {(track.size / (1024 * 1024)).toFixed(1)} MB
                                   </td>
-                                  <td className="py-3 px-4 text-right">
+                                  <td className="py-3 px-3 sm:px-4 text-right">
                                     <div className="flex items-center justify-end gap-1.5">
                                       <button
                                         onClick={() => previewMusicTrack(track.id)}
-                                        className={`px-2.5 py-1.5 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 ${
+                                        className={`px-2 sm:px-2.5 py-1.5 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 ${
                                           isPreviewing
                                             ? 'bg-red-50 text-red-600 hover:bg-red-100'
-                                            : 'bg-indigo-50 text-indigo-700 hover:bg-indigo-100'
+                                            : 'bg-blue-50 text-[#004175] hover:bg-blue-100'
                                         }`}
                                       >
                                         {isPreviewing ? (
                                           <>
-                                            <Square className="w-3 h-3 fill-red-600" /> Stop
+                                            <Square className="w-3 h-3 fill-red-600" /> <span className="hidden sm:inline">Stop</span>
                                           </>
                                         ) : (
                                           <>
-                                            <Play className="w-3 h-3 fill-indigo-700" /> Dengar
+                                            <Play className="w-3 h-3 fill-[#004175]" /> <span className="hidden sm:inline">Dengar</span>
                                           </>
                                         )}
                                       </button>
                                       <button
                                         onClick={() => setDeleteMusicTarget(track)}
-                                        className="p-1.5 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"
+                                        className="p-1.5 text-red-500 bg-red-50 hover:bg-red-100 rounded-lg transition-colors"
                                         title="Hapus lagu"
                                       >
                                         <Trash2 className="w-4 h-4" />
@@ -548,7 +858,7 @@ export default function LibraryPage() {
                 </div>
               ) : (
                 <>
-                  <div className="space-y-3 md:grid md:grid-cols-2 md:gap-3 md:space-y-0 xl:hidden">
+                  <div className="space-y-3 sm:grid sm:grid-cols-2 sm:gap-3 sm:space-y-0 lg:hidden">
                     {announcements.map((ann) => {
                       const parts = (ann.voice || "Pria").split("/");
                       const vId = parts[0];
@@ -606,22 +916,22 @@ export default function LibraryPage() {
                     })}
                   </div>
 
-                  <div className="hidden overflow-x-auto rounded-2xl border border-gray-100 bg-white shadow-sm xl:block">
-                    <table className="w-full min-w-[1040px] table-fixed text-left">
+                  <div className="hidden overflow-x-auto rounded-2xl border border-gray-100 bg-white shadow-sm lg:block">
+                    <table className="w-full min-w-[680px] table-fixed text-left">
                       <thead>
                         <tr className="border-b border-gray-100 bg-gray-50/80">
-                          <th className="w-[5%] px-4 py-4 text-[10px] font-black uppercase tracking-widest text-gray-400"></th>
-                          <th className="w-[21%] px-4 py-4 text-[10px] font-black uppercase tracking-widest text-gray-400">Judul</th>
-                          <th className="w-[26%] px-4 py-4 text-[10px] font-black uppercase tracking-widest text-gray-400">Teks Indonesia</th>
-                          <th className="w-[26%] px-4 py-4 text-[10px] font-black uppercase tracking-widest text-gray-400">Teks English</th>
-                          <th className="w-[12%] px-4 py-4 text-[10px] font-black uppercase tracking-widest text-gray-400">Suara</th>
-                          <th className="w-[10%] px-4 py-4 text-right text-[10px] font-black uppercase tracking-widest text-gray-400">Aksi</th>
+                          <th className="w-[6%] px-3 py-3.5 text-[10px] font-black uppercase tracking-widest text-gray-400"></th>
+                          <th className="w-[20%] px-3 py-3.5 text-[10px] font-black uppercase tracking-widest text-gray-400">Judul</th>
+                          <th className="w-[26%] px-3 py-3.5 text-[10px] font-black uppercase tracking-widest text-gray-400">Teks Indonesia</th>
+                          <th className="w-[26%] px-3 py-3.5 text-[10px] font-black uppercase tracking-widest text-gray-400">Teks English</th>
+                          <th className="w-[12%] px-3 py-3.5 text-[10px] font-black uppercase tracking-widest text-gray-400">Suara</th>
+                          <th className="w-[10%] px-3 py-3.5 text-right text-[10px] font-black uppercase tracking-widest text-gray-400">Aksi</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-gray-50">
                         {announcements.map((ann) => (
                           <tr key={ann.id} className="group align-top transition-colors hover:bg-gray-50/60">
-                            <td className="px-4 py-4">
+                            <td className="px-3 py-3.5">
                               <button
                                 onClick={() => updateAnnouncement.mutate({ id: ann.id, isFavorite: !ann.isFavorite })}
                                 title={ann.isFavorite ? 'Hapus dari favorit' : 'Tambah ke favorit'}
@@ -630,16 +940,16 @@ export default function LibraryPage() {
                                 <Star className={`h-4 w-4 ${ann.isFavorite ? 'fill-[#F9BB00] text-[#F9BB00]' : ''}`} />
                               </button>
                             </td>
-                            <td className="px-4 py-4">
+                            <td className="px-3 py-3.5">
                               <p className="line-clamp-2 break-words text-sm font-bold text-[#004175]">{ann.title}</p>
                             </td>
-                            <td className="px-4 py-4">
-                              <p className="line-clamp-2 break-words text-sm text-gray-500">{ann.contentId || '—'}</p>
+                            <td className="px-3 py-3.5">
+                              <p className="line-clamp-2 break-words text-xs sm:text-sm text-gray-500">{ann.contentId || '—'}</p>
                             </td>
-                            <td className="px-4 py-4">
-                              <p className="line-clamp-2 break-words text-sm text-gray-500">{ann.contentEn || '—'}</p>
+                            <td className="px-3 py-3.5">
+                              <p className="line-clamp-2 break-words text-xs sm:text-sm text-gray-500">{ann.contentEn || '—'}</p>
                             </td>
-                            <td className="px-4 py-4">
+                            <td className="px-3 py-3.5">
                               <div className="flex flex-col gap-1">
                                 {(() => {
                                   const parts = (ann.voice || "Pria").split("/");
@@ -654,8 +964,8 @@ export default function LibraryPage() {
                                 })()}
                               </div>
                             </td>
-                            <td className="px-4 py-4 text-right">
-                              <div className="flex items-center justify-end gap-1.5 opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100">
+                            <td className="px-3 py-3.5 text-right">
+                              <div className="flex items-center justify-end gap-1.5 opacity-100 transition-opacity xl:opacity-0 xl:group-hover:opacity-100">
                                 <button onClick={() => openEdit(ann)} className="rounded-lg bg-blue-50 p-2 text-[#004175] transition-colors hover:bg-blue-100" title="Edit">
                                   <Pencil className="h-3.5 w-3.5" />
                                 </button>
@@ -707,19 +1017,8 @@ export default function LibraryPage() {
                 </div>
                 <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
                   <div>
-                    <label className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5 block">Teks Indonesia</label>
-                    <textarea value={form.contentId} onChange={e => setForm(f => ({ ...f, contentId: e.target.value }))}
-                      placeholder="Masukkan teks bahasa Indonesia..."
-                      className="w-full min-h-[220px] px-4 py-3 rounded-xl bg-gray-50 border border-gray-200 text-gray-800 resize-y focus:outline-none focus:ring-2 focus:ring-[#004175]/20 transition-all" />
-                  </div>
-                  <div>
                     <div className="flex items-center justify-between mb-1.5">
-                      <label className="text-xs font-bold text-gray-500 uppercase tracking-wider flex items-center gap-1.5">
-                        Teks English
-                        {isTranslatingLib && (
-                          <span className="text-emerald-600 font-semibold normal-case animate-pulse">Translating...</span>
-                        )}
-                      </label>
+                      <label className="text-xs font-bold text-gray-500 uppercase tracking-wider">Teks Indonesia</label>
                       <button
                         type="button"
                         onClick={() => setAutoTranslateEnabled(!autoTranslateEnabled)}
@@ -731,7 +1030,22 @@ export default function LibraryPage() {
                         Auto-Translate {autoTranslateEnabled ? 'On' : 'Off'}
                       </button>
                     </div>
-                    <textarea value={form.contentEn} onChange={e => setForm(f => ({ ...f, contentEn: e.target.value }))}
+                    <textarea value={form.contentId} onChange={e => { isUserEditingLibIdRef.current = true; setForm(f => ({ ...f, contentId: e.target.value })); }}
+                      placeholder="Masukkan teks bahasa Indonesia..."
+                      className="w-full min-h-[220px] px-4 py-3 rounded-xl bg-gray-50 border border-gray-200 text-gray-800 resize-y focus:outline-none focus:ring-2 focus:ring-[#004175]/20 transition-all" />
+                  </div>
+                  <div>
+                    <div className="flex items-center mb-1.5 h-[28px]">
+                      <label className="text-xs font-bold text-gray-500 uppercase tracking-wider flex items-center gap-1.5">
+                        Teks English
+                        {isTranslatingLib && (
+                          <span className="text-emerald-600 font-semibold normal-case animate-pulse">
+                            Translating ({translationEngine === "deepl" ? "DeepL" : "Google"})...
+                          </span>
+                        )}
+                      </label>
+                    </div>
+                    <textarea value={form.contentEn} onChange={e => { isUserEditingLibIdRef.current = false; setForm(f => ({ ...f, contentEn: e.target.value })); }}
                       placeholder="Enter English text..."
                       className="w-full min-h-[220px] px-4 py-3 rounded-xl bg-gray-50 border border-gray-200 text-gray-800 resize-y focus:outline-none focus:ring-2 focus:ring-[#004175]/20 transition-all" />
                   </div>
@@ -950,6 +1264,253 @@ export default function LibraryPage() {
         )}
       </AnimatePresence>
 
+      {/* Form Create/Edit Duplicate Conflict Modal */}
+      <AnimatePresence>
+        {formConflict && (
+          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+              className="absolute inset-0 bg-gray-900/40 backdrop-blur-sm" onClick={() => setFormConflict(null)} />
+            <motion.div initial={{ opacity: 0, scale: 0.95, y: 20 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              className="relative w-full max-w-lg bg-white rounded-3xl shadow-2xl overflow-hidden border border-gray-100"
+            >
+              <div className="bg-gradient-to-br from-[#004175] via-[#003866] to-[#002a4d] p-6 text-white relative overflow-hidden">
+                <div className="absolute top-0 right-0 w-32 h-32 bg-[#F9BB00]/10 rounded-full -mr-10 -mt-10 blur-2xl pointer-events-none" />
+                <div className="flex items-start justify-between gap-3 relative z-10">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2.5 bg-white/10 text-[#F9BB00] rounded-xl backdrop-blur-sm">
+                      <AlertTriangle className="w-6 h-6" />
+                    </div>
+                    <div>
+                      <h3 className="font-display text-xl font-bold">Template Serupa Ditemukan</h3>
+                      <p className="text-white/70 text-xs mt-0.5">
+                        Template dengan judul atau isi serupa sudah ada di Pustaka
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setFormConflict(null)}
+                    title="Tutup dialog"
+                    className="p-1.5 rounded-lg text-white/60 hover:text-white hover:bg-white/10 transition-colors"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+              </div>
+
+              <div className="p-6 space-y-4">
+                <div className="bg-[#004175]/5 border border-[#004175]/15 rounded-2xl p-4">
+                  <div className="flex items-center justify-between mb-2">
+                    <p className="text-xs font-bold text-[#004175] uppercase tracking-wider">Template yang sudah ada:</p>
+                    <span className="text-[10px] bg-blue-50 text-[#004175] border border-blue-200/60 px-2 py-0.5 rounded-md font-semibold">
+                      {formConflict.reason}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2 text-xs text-gray-700 bg-white px-3 py-2 rounded-lg border border-gray-200/80 shadow-xs">
+                    <span className="w-1.5 h-1.5 rounded-full bg-[#F9BB00] shrink-0" />
+                    <span className="font-semibold text-gray-800 truncate">{formConflict.existing.title}</span>
+                  </div>
+                </div>
+
+                <p className="text-xs font-bold text-gray-500 uppercase tracking-wider">
+                  Pilih tindakan penyimpanan:
+                </p>
+
+                <div className="space-y-2.5">
+                  <button
+                    type="button"
+                    onClick={() => void executeFormConflictStrategy('overwrite')}
+                    disabled={createAnnouncement.isPending || updateAnnouncement.isPending}
+                    className="w-full flex items-start gap-3.5 p-3.5 bg-white hover:bg-blue-50/50 border border-gray-200 hover:border-[#004175] text-left rounded-xl transition-all group disabled:opacity-50 shadow-xs hover:shadow-sm"
+                  >
+                    <div className="p-2 bg-[#004175] text-white rounded-lg group-hover:scale-105 transition-transform shrink-0 mt-0.5 shadow-sm">
+                      <RefreshCw className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="font-bold text-sm text-[#004175]">1. Timpa Template Lama</span>
+                        <span className="text-[10px] bg-[#F9BB00] text-[#004175] px-2 py-0.5 rounded-full font-black">Perbarui</span>
+                      </div>
+                      <p className="text-xs text-gray-500 mt-0.5 leading-relaxed">
+                        Perbarui template <span className="font-semibold text-gray-700">"{formConflict.existing.title}"</span> dengan isi dan pengaturan suara terbaru.
+                      </p>
+                    </div>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => void executeFormConflictStrategy('keep-both')}
+                    disabled={createAnnouncement.isPending || updateAnnouncement.isPending}
+                    className="w-full flex items-start gap-3.5 p-3.5 bg-white hover:bg-blue-50/50 border border-gray-200 hover:border-[#004175] text-left rounded-xl transition-all group disabled:opacity-50 shadow-xs hover:shadow-sm"
+                  >
+                    <div className="p-2 bg-[#004175]/10 text-[#004175] group-hover:bg-[#004175] group-hover:text-white rounded-lg group-hover:scale-105 transition-all shrink-0 mt-0.5 shadow-sm">
+                      <Copy className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="font-bold text-sm text-gray-800 group-hover:text-[#004175] transition-colors">2. Simpan Sebagai Salinan Baru</span>
+                        <span className="text-[10px] bg-blue-100 text-[#004175] px-2 py-0.5 rounded-full font-bold">Simpan Keduanya</span>
+                      </div>
+                      <p className="text-xs text-gray-500 mt-0.5 leading-relaxed">
+                        Template lama tetap utuh, dan template ini disimpan dengan akhiran <span className="font-semibold text-[#004175]">(Salinan)</span>.
+                      </p>
+                    </div>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setFormConflict(null)}
+                    disabled={createAnnouncement.isPending || updateAnnouncement.isPending}
+                    className="w-full py-2.5 rounded-xl font-bold text-gray-500 hover:text-[#004175] hover:bg-gray-100 border border-gray-200 transition-colors text-xs text-center mt-2"
+                  >
+                    Kembali &amp; Ubah Judul Template
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Music Import / Upload Conflict Resolution Modal */}
+      <AnimatePresence>
+        {musicImportConflicts && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+              className="absolute inset-0 bg-gray-900/40 backdrop-blur-sm" onClick={() => setMusicImportConflicts(null)} />
+            <motion.div initial={{ opacity: 0, scale: 0.95, y: 20 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              className="relative w-full max-w-lg bg-white rounded-3xl shadow-2xl overflow-hidden border border-gray-100"
+            >
+              <div className="bg-gradient-to-br from-[#004175] via-[#003866] to-[#002a4d] p-6 text-white relative overflow-hidden">
+                <div className="absolute top-0 right-0 w-32 h-32 bg-[#F9BB00]/10 rounded-full -mr-10 -mt-10 blur-2xl pointer-events-none" />
+                <div className="flex items-start justify-between gap-3 relative z-10">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2.5 bg-white/10 text-[#F9BB00] rounded-xl backdrop-blur-sm">
+                      <AlertTriangle className="w-6 h-6" />
+                    </div>
+                    <div>
+                      <h3 className="font-display text-xl font-bold">Lagu Duplikat Ditemukan</h3>
+                      <p className="text-white/70 text-xs mt-0.5">
+                        {musicImportConflicts.duplicates.length} lagu sudah ada • {musicImportConflicts.newItems.length} lagu baru
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setMusicImportConflicts(null)}
+                    disabled={isImporting}
+                    title="Tutup dialog"
+                    className="p-1.5 rounded-lg text-white/60 hover:text-white hover:bg-white/10 transition-colors"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+              </div>
+              <div className="p-6 space-y-4">
+                <div className="bg-[#004175]/5 border border-[#004175]/15 rounded-2xl p-4">
+                  <div className="flex items-center justify-between mb-2.5">
+                    <p className="text-xs font-bold text-[#004175] uppercase tracking-wider">Lagu yang sudah ada di pustaka:</p>
+                    <span className="text-[10px] font-bold bg-[#004175]/10 text-[#004175] px-2 py-0.5 rounded-full">
+                      {musicImportConflicts.duplicates.length} lagu
+                    </span>
+                  </div>
+                  <div className="max-h-32 overflow-y-auto styled-scrollbar space-y-1.5">
+                    {musicImportConflicts.duplicates.map((item, i) => (
+                      <div key={i} className="flex items-center justify-between text-xs text-gray-700 bg-white px-3 py-1.5 rounded-lg border border-gray-200/80 shadow-xs">
+                        <div className="flex items-center gap-2 truncate">
+                          <span className="w-1.5 h-1.5 rounded-full bg-[#F9BB00] shrink-0" />
+                          <span className="font-semibold text-gray-800 truncate">{item.name}</span>
+                        </div>
+                        {item._conflictReason && (
+                          <span className="text-[10px] bg-blue-50 text-[#004175] border border-blue-200/60 px-2 py-0.5 rounded-md font-semibold shrink-0 ml-2">
+                            {item._conflictReason}
+                          </span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <p className="text-xs font-bold text-gray-500 uppercase tracking-wider">
+                  Pilih tindakan penanganan lagu duplikat:
+                </p>
+
+                <div className="space-y-2.5">
+                  <button
+                    type="button"
+                    onClick={() => void executeMusicImportStrategy('overwrite')}
+                    disabled={isImporting}
+                    className="w-full flex items-start gap-3.5 p-3.5 bg-white hover:bg-blue-50/50 border border-gray-200 hover:border-[#004175] text-left rounded-xl transition-all group disabled:opacity-50 shadow-xs hover:shadow-sm"
+                  >
+                    <div className="p-2 bg-[#004175] text-white rounded-lg group-hover:scale-105 transition-transform shrink-0 mt-0.5 shadow-sm">
+                      <RefreshCw className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="font-bold text-sm text-[#004175]">1. Timpa Lagu Lama</span>
+                        <span className="text-[10px] bg-[#F9BB00] text-[#004175] px-2 py-0.5 rounded-full font-black">Perbarui</span>
+                      </div>
+                      <p className="text-xs text-gray-500 mt-0.5 leading-relaxed">
+                        Perbarui file lagu lama di pustaka dengan data audio terbaru.
+                      </p>
+                    </div>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => void executeMusicImportStrategy('keep-both')}
+                    disabled={isImporting}
+                    className="w-full flex items-start gap-3.5 p-3.5 bg-white hover:bg-blue-50/50 border border-gray-200 hover:border-[#004175] text-left rounded-xl transition-all group disabled:opacity-50 shadow-xs hover:shadow-sm"
+                  >
+                    <div className="p-2 bg-[#004175]/10 text-[#004175] group-hover:bg-[#004175] group-hover:text-white rounded-lg group-hover:scale-105 transition-all shrink-0 mt-0.5 shadow-sm">
+                      <Copy className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="font-bold text-sm text-gray-800 group-hover:text-[#004175] transition-colors">2. Tetap Masukkan Duplikat</span>
+                        <span className="text-[10px] bg-blue-100 text-[#004175] px-2 py-0.5 rounded-full font-bold">Simpan Keduanya</span>
+                      </div>
+                      <p className="text-xs text-gray-500 mt-0.5 leading-relaxed">
+                        Lagu lama tetap utuh, dan lagu baru disimpan berlabel <span className="font-semibold text-[#004175]">(Salinan)</span>.
+                      </p>
+                    </div>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => void executeMusicImportStrategy('skip')}
+                    disabled={isImporting}
+                    className="w-full flex items-start gap-3.5 p-3.5 bg-white hover:bg-gray-50 border border-gray-200 hover:border-gray-300 text-left rounded-xl transition-all group disabled:opacity-50 shadow-xs"
+                  >
+                    <div className="p-2 bg-gray-100 text-gray-600 rounded-lg group-hover:scale-105 transition-transform shrink-0 mt-0.5 shadow-sm">
+                      <XCircle className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="font-bold text-sm text-gray-700">3. Buang Duplikat (Lewati)</span>
+                        <span className="text-[10px] bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full font-bold">Hanya Yang Baru</span>
+                      </div>
+                      <p className="text-xs text-gray-500 mt-0.5 leading-relaxed">
+                        Jangan masukkan lagu yang namanya sudah ada di pustaka.
+                      </p>
+                    </div>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setMusicImportConflicts(null)}
+                    disabled={isImporting}
+                    className="w-full py-2.5 rounded-xl font-bold text-gray-500 hover:text-[#004175] hover:bg-gray-100 border border-gray-200 transition-colors text-xs text-center mt-2"
+                  >
+                    Batalkan Proses
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
       {/* Delete Music Confirmation Dialog */}
       <ConfirmDialog
         open={deleteMusicTarget !== null}
@@ -997,6 +1558,7 @@ function TimePicker({ value, onChange }: { value: string; onChange: (val: string
 export function SchedulerPage() {
   const { data: schedules = [], isLoading: loadingSchedules } = useSchedules();
   const { data: announcements = [] } = useAnnouncements();
+  const createAnnouncement = useCreateAnnouncement();
   const createSchedule = useCreateSchedule();
   const updateSchedule = useUpdateSchedule();
   const deleteSchedule = useDeleteSchedule();
@@ -1010,6 +1572,12 @@ export function SchedulerPage() {
   const [formOutroMusicIds, setFormOutroMusicIds] = useState<string[]>([]);
   const [formHasOutro, setFormHasOutro] = useState<boolean>(false);
   const [deleteSchId, setDeleteSchId] = useState<number | null>(null);
+  const scheduleImportInputRef = useRef<HTMLInputElement>(null);
+  const [isImportingSchedules, setIsImportingSchedules] = useState(false);
+  const [scheduleImportConflicts, setScheduleImportConflicts] = useState<{
+    newItems: any[];
+    duplicates: any[];
+  } | null>(null);
 
   const toggleTrackInSchedule = (id: string) => {
     setFormOutroMusicIds(prev =>
@@ -1117,9 +1685,11 @@ export function SchedulerPage() {
       }
     });
 
-    // 2. Data dari dailyLogs (localStorage)
+    // 2. Data dari dailyLogs (localStorage) — gunakan format key yang sama (`sch-...`) agar tidak double dengan data server
     dailyLogs.forEach(log => {
-      const key = `log-${log.scheduleId || 'manual'}-${log.playedAt.slice(0, 16)}`;
+      const key = log.scheduleId
+        ? `sch-${log.scheduleId}-${log.playedAt.slice(0, 16)}`
+        : `log-manual-${log.playedAt.slice(0, 16)}`;
       if (!map.has(key)) {
         map.set(key, {
           id: log.id,
@@ -1162,19 +1732,22 @@ export function SchedulerPage() {
     setPlayingScheduleId(schedule.id);
     const nowIso = new Date().toISOString();
 
-    // Catat ke daily log lokal seketika
-    saveDailyPlaybackLog({
-      scheduleId: schedule.id,
-      announcementId: schedule.announcementId,
-      title: ann.title || "Pengumuman",
-      playedAt: nowIso,
-      recurring: schedule.recurring,
-      daysOfWeek: schedule.daysOfWeek,
-    });
-
     try {
       const voiceParts = (ann.voice || "Pria").split("/");
-      await playAudio(ann.contentId, ann.contentEn, voiceParts[0], voiceParts[1] || voiceParts[0]);
+      const completed = await playAudio(ann.contentId, ann.contentEn, voiceParts[0], voiceParts[1] || voiceParts[0]);
+      if (!completed) {
+        return;
+      }
+
+      // Catat ke daily log lokal setelah pengumuman selesai diputar
+      saveDailyPlaybackLog({
+        scheduleId: schedule.id,
+        announcementId: schedule.announcementId,
+        title: ann.title || "Pengumuman",
+        playedAt: nowIso,
+        recurring: schedule.recurring,
+        daysOfWeek: schedule.daysOfWeek,
+      });
 
       const outroIds = schedule.outroMusicIds && schedule.outroMusicIds.length > 0
         ? schedule.outroMusicIds
@@ -1239,72 +1812,396 @@ export function SchedulerPage() {
     setShowForm(true);
   };
 
+  const isSubmittingScheduleRef = useRef(false);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!formAnnId || !formTime) return;
+    if (isSubmittingScheduleRef.current || createSchedule.isPending || updateSchedule.isPending) return;
+    isSubmittingScheduleRef.current = true;
 
-    const playTime = getInitialSchedulePlayTime(formTime, formRecurring, formDaysOfWeek);
+    try {
+      const playTime = getInitialSchedulePlayTime(formTime, formRecurring, formDaysOfWeek);
 
-    const scheduleData = {
-      announcementId: formAnnId,
-      playTime: playTime.toISOString(),
-      status: "Waiting" as const,
-      recurring: formRecurring,
-      daysOfWeek: formRecurring ? formDaysOfWeek : [], // Only use daysOfWeek if recurring
-      outroMusicId: formHasOutro && formOutroMusicIds.length > 0 ? formOutroMusicIds[0] : null,
-      outroMusicIds: formHasOutro ? formOutroMusicIds : [],
-      outroMusicDuration: 0,
-    };
+      const scheduleData = {
+        announcementId: formAnnId,
+        playTime: playTime.toISOString(),
+        status: "Waiting" as const,
+        recurring: formRecurring,
+        daysOfWeek: formRecurring ? formDaysOfWeek : [], // Only use daysOfWeek if recurring
+        outroMusicId: formHasOutro && formOutroMusicIds.length > 0 ? formOutroMusicIds[0] : null,
+        outroMusicIds: formHasOutro ? formOutroMusicIds : [],
+        outroMusicDuration: 0,
+      };
 
-    if (editingId) {
-      await updateSchedule.mutateAsync({ id: editingId, ...scheduleData });
-    } else {
-      await createSchedule.mutateAsync(scheduleData);
+      if (editingId) {
+        await updateSchedule.mutateAsync({ id: editingId, ...scheduleData });
+      } else {
+        // Cek apakah jadwal di jam & pengumuman yang sama sudah ada agar tidak duplikat
+        const existingSame = schedules.find((s) => {
+          if (s.status === "Done" && !s.recurring) return false;
+          const sTime = format(new Date(s.playTime), "HH:mm");
+          return s.announcementId === formAnnId && sTime === formTime;
+        });
+        if (existingSame) {
+          await updateSchedule.mutateAsync({ id: existingSame.id, ...scheduleData });
+          toast({
+            title: "Jadwal Diperbarui",
+            description: `Jadwal pada pukul ${formTime} untuk pengumuman ini sudah ada dan telah diperbarui.`,
+          });
+        } else {
+          await createSchedule.mutateAsync(scheduleData);
+        }
+      }
+      setShowForm(false);
+    } finally {
+      isSubmittingScheduleRef.current = false;
     }
-    setShowForm(false);
+  };
+
+  // --- Export & Import Jadwal Siaran ---
+  const handleExportSchedules = () => {
+    if (schedules.length === 0) return;
+    const exportPayload = {
+      type: "simantu_schedules",
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      schedules: schedules.map((s) => {
+        const ann = announcements.find((a) => a.id === s.announcementId);
+        const ids = s.outroMusicIds && s.outroMusicIds.length > 0
+          ? s.outroMusicIds
+          : (s.outroMusicId ? [s.outroMusicId] : []);
+        const outroMusicNames = ids
+          .map((id) => musicTracks.find((m) => m.id === id)?.name)
+          .filter(Boolean) as string[];
+        return {
+          playTime: typeof s.playTime === "string" ? s.playTime : new Date(s.playTime).toISOString(),
+          timeHHmm: format(new Date(s.playTime), "HH:mm"),
+          status: s.status || "Waiting",
+          recurring: Boolean(s.recurring),
+          daysOfWeek: s.daysOfWeek || [],
+          outroMusicId: s.outroMusicId || null,
+          outroMusicIds: ids,
+          outroMusicNames,
+          announcementId: s.announcementId,
+          announcementSnapshot: ann
+            ? {
+                title: ann.title,
+                contentId: ann.contentId,
+                contentEn: ann.contentEn,
+                voice: ann.voice || "Pria/Pria",
+                isFavorite: ann.isFavorite ?? false,
+              }
+            : null,
+        };
+      }),
+    };
+    const json = JSON.stringify(exportPayload, null, 2);
+    const blob = new Blob([json], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `simantu-jadwal-${format(new Date(), "yyyy-MM-dd")}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast({
+      title: "✅ Export Jadwal Berhasil",
+      description: `${schedules.length} jadwal siaran berhasil diexport ke file JSON.`,
+    });
+  };
+
+  const handleImportSchedules = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = "";
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text);
+      const rawItems: any[] = Array.isArray(parsed)
+        ? parsed
+        : Array.isArray(parsed?.schedules)
+          ? parsed.schedules
+          : [];
+
+      if (rawItems.length === 0) {
+        toast({
+          title: "Gagal Import Jadwal",
+          description: "File JSON tidak berisi data jadwal siaran yang valid.",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      setIsImportingSchedules(true);
+
+      // Local map of announcements so if we auto-create missing templates, we don't duplicate them
+      const currentAnns = [...announcements];
+      const prepared: any[] = [];
+
+      for (const item of rawItems) {
+        let resolvedAnn = null;
+        const snap = item.announcementSnapshot;
+        if (snap && typeof snap.title === "string") {
+          const titleLower = snap.title.trim().toLowerCase();
+          const contentLower = (snap.contentId || "").trim().toLowerCase();
+          resolvedAnn = currentAnns.find(
+            (a) =>
+              a.title.trim().toLowerCase() === titleLower ||
+              (contentLower && a.contentId?.trim().toLowerCase() === contentLower)
+          );
+          if (!resolvedAnn && (snap.contentId || snap.contentEn)) {
+            const created = await createAnnouncement.mutateAsync({
+              title: snap.title.trim(),
+              contentId: snap.contentId || "",
+              contentEn: snap.contentEn || "",
+              voice: snap.voice || "Pria/Pria",
+              isFavorite: Boolean(snap.isFavorite),
+            });
+            currentAnns.push(created);
+            resolvedAnn = created;
+          }
+        }
+
+        if (!resolvedAnn && typeof item.announcementId === "number") {
+          resolvedAnn = currentAnns.find((a) => a.id === item.announcementId) || null;
+        }
+        if (!resolvedAnn && currentAnns.length > 0) {
+          resolvedAnn = currentAnns[0];
+        }
+        if (!resolvedAnn) continue;
+
+        const timeHHmm =
+          typeof item.timeHHmm === "string" && /^\d{2}:\d{2}$/.test(item.timeHHmm)
+            ? item.timeHHmm
+            : item.playTime
+              ? format(new Date(item.playTime), "HH:mm")
+              : "08:00";
+
+        const recurring = Boolean(item.recurring);
+        const daysOfWeek = Array.isArray(item.daysOfWeek)
+          ? item.daysOfWeek.filter((d: any) => Number.isInteger(d) && d >= 0 && d <= 6)
+          : [];
+
+        // Resolve outro music IDs by ID first, then by track name
+        const rawIds: string[] = Array.isArray(item.outroMusicIds)
+          ? item.outroMusicIds
+          : item.outroMusicId
+            ? [item.outroMusicId]
+            : [];
+        const rawNames: string[] = Array.isArray(item.outroMusicNames) ? item.outroMusicNames : [];
+        const resolvedMusicIds: string[] = [];
+        rawIds.forEach((id, idx) => {
+          if (musicTracks.some((m) => m.id === id)) {
+            resolvedMusicIds.push(id);
+          } else if (rawNames[idx]) {
+            const byName = musicTracks.find(
+              (m) => m.name.trim().toLowerCase() === String(rawNames[idx]).trim().toLowerCase()
+            );
+            if (byName && !resolvedMusicIds.includes(byName.id)) {
+              resolvedMusicIds.push(byName.id);
+            }
+          }
+        });
+        if (resolvedMusicIds.length === 0 && rawNames.length > 0) {
+          for (const nm of rawNames) {
+            const byName = musicTracks.find(
+              (m) => m.name.trim().toLowerCase() === String(nm).trim().toLowerCase()
+            );
+            if (byName && !resolvedMusicIds.includes(byName.id)) {
+              resolvedMusicIds.push(byName.id);
+            }
+          }
+        }
+
+        const nextPlayTime = getInitialSchedulePlayTime(timeHHmm, recurring, daysOfWeek);
+
+        prepared.push({
+          announcementId: resolvedAnn.id,
+          announcementTitle: resolvedAnn.title,
+          timeHHmm,
+          playTime: nextPlayTime.toISOString(),
+          status: "Waiting" as const,
+          recurring,
+          daysOfWeek: recurring ? daysOfWeek : [],
+          outroMusicId: resolvedMusicIds[0] || null,
+          outroMusicIds: resolvedMusicIds,
+          outroMusicDuration: 0,
+        });
+      }
+
+      if (prepared.length === 0) {
+        setIsImportingSchedules(false);
+        toast({
+          title: "Tidak Ada Jadwal Valid",
+          description: "Pastikan minimal ada 1 pengumuman di pustaka sebelum mengimpor jadwal.",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      const newItems: any[] = [];
+      const duplicates: any[] = [];
+
+      for (const prep of prepared) {
+        const matchedExisting = schedules.find((s) => {
+          const existingHHmm = format(new Date(s.playTime), "HH:mm");
+          return s.announcementId === prep.announcementId && existingHHmm === prep.timeHHmm;
+        });
+
+        if (matchedExisting) {
+          duplicates.push({
+            ...prep,
+            _existingId: matchedExisting.id,
+            _conflictReason: `Jam ${prep.timeHHmm} & Pengumuman sama`,
+          });
+        } else {
+          newItems.push(prep);
+        }
+      }
+
+      if (duplicates.length > 0) {
+        setIsImportingSchedules(false);
+        setScheduleImportConflicts({ newItems, duplicates });
+        return;
+      }
+
+      let importedCount = 0;
+      for (const item of newItems) {
+        const { announcementTitle, timeHHmm, ...payload } = item;
+        await createSchedule.mutateAsync(payload);
+        importedCount++;
+      }
+      setIsImportingSchedules(false);
+      toast({
+        title: "✅ Import Jadwal Berhasil",
+        description: `${importedCount} jadwal siaran berhasil ditambahkan.`,
+      });
+    } catch (err: any) {
+      setIsImportingSchedules(false);
+      toast({
+        title: "Gagal Import Jadwal",
+        description: err?.message || "Pastikan format file JSON jadwal valid.",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const executeScheduleImportStrategy = async (strategy: "overwrite" | "keep-both" | "skip") => {
+    if (!scheduleImportConflicts) return;
+    const { newItems, duplicates } = scheduleImportConflicts;
+    setScheduleImportConflicts(null);
+    setIsImportingSchedules(true);
+
+    let added = 0;
+    let updated = 0;
+    let skipped = 0;
+
+    try {
+      for (const item of newItems) {
+        const { announcementTitle, timeHHmm, ...payload } = item;
+        await createSchedule.mutateAsync(payload);
+        added++;
+      }
+
+      for (const dup of duplicates) {
+        const { announcementTitle, timeHHmm, _existingId, _conflictReason, ...payload } = dup;
+        if (strategy === "skip") {
+          skipped++;
+        } else if (strategy === "overwrite" && _existingId) {
+          await updateSchedule.mutateAsync({ id: _existingId, ...payload });
+          updated++;
+        } else if (strategy === "keep-both") {
+          await createSchedule.mutateAsync(payload);
+          added++;
+        }
+      }
+
+      const parts: string[] = [];
+      if (added > 0) parts.push(`${added} jadwal baru ditambahkan`);
+      if (updated > 0) parts.push(`${updated} jadwal lama diperbarui`);
+      if (skipped > 0) parts.push(`${skipped} duplikat dilewati`);
+
+      toast({
+        title: "✅ Import Jadwal Selesai",
+        description: parts.join(", ") || "Tidak ada perubahan jadwal.",
+      });
+    } catch (err: any) {
+      toast({
+        title: "Gagal Menyelesaikan Import Jadwal",
+        description: err?.message || "Terjadi kesalahan saat menyimpan jadwal.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsImportingSchedules(false);
+    }
   };
 
   return (
-    <div className="h-full w-full bg-neutral-900 flex p-2 sm:p-4 font-sans selection:bg-[#F9BB00] selection:text-[#004175]">
-      <div className="flex-1 w-full max-w-[1920px] mx-auto bg-gray-50 rounded-2xl shadow-2xl overflow-hidden flex flex-col md:flex-row relative ring-1 ring-white/10">
+    <div className="h-full w-full bg-neutral-900 flex p-1.5 sm:p-3 lg:p-4 font-sans selection:bg-[#F9BB00] selection:text-[#004175]">
+      <div className="flex-1 w-full max-w-[2560px] mx-auto bg-gray-50 rounded-2xl shadow-2xl overflow-hidden flex flex-col md:flex-row relative ring-1 ring-white/10">
         <Sidebar />
 
-        <main className="flex-1 flex flex-col min-w-0 overflow-hidden relative">
+        <main className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden relative">
           <div className="absolute top-0 left-1/4 w-96 h-96 bg-blue-600/5 rounded-full blur-3xl pointer-events-none" />
 
-          <header className="min-h-24 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between px-4 sm:px-8 py-4 border-b border-gray-100 bg-white/50 backdrop-blur-md shrink-0 relative z-10">
+          <header className="min-h-20 sm:min-h-24 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between px-4 sm:px-6 lg:px-8 py-3.5 sm:py-4 border-b border-gray-100 bg-white/50 backdrop-blur-md shrink-0 relative z-10">
             <div>
-              <div className="flex items-center gap-2 mb-1">
+              <div className="flex items-center gap-2 mb-0.5 sm:mb-1">
                 <div className="w-2 h-2 rounded-full bg-[#F9BB00]" />
                 <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Automation</span>
               </div>
-              <h1 className="font-display text-2xl sm:text-3xl font-black text-[#004175] tracking-tight">Daily Scheduler</h1>
+              <h1 className="font-display text-xl sm:text-2xl lg:text-3xl font-black text-[#004175] tracking-tight">Daily Scheduler</h1>
             </div>
-            <button
-              onClick={openCreate}
-              disabled={announcements.length === 0}
-              className="flex w-full sm:w-auto items-center justify-center gap-2 px-5 py-2.5 bg-[#F9BB00] text-[#004175] rounded-xl font-bold text-sm hover:bg-[#e0a800] transition-colors shadow-lg shadow-[#F9BB00]/20 disabled:opacity-50"
-            >
-              <Plus className="w-4 h-4" /> Tambah Jadwal
-            </button>
+            <div className="flex w-full sm:w-auto items-center gap-2 flex-wrap">
+              <button
+                onClick={handleExportSchedules}
+                disabled={schedules.length === 0}
+                className="flex items-center gap-1.5 px-3 py-2.5 bg-gray-100 text-gray-600 rounded-xl font-semibold text-sm hover:bg-gray-200 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                title="Export semua jadwal siaran ke file JSON"
+              >
+                <Download className="w-4 h-4" /> Export
+              </button>
+              <button
+                onClick={() => scheduleImportInputRef.current?.click()}
+                disabled={isImportingSchedules}
+                className="flex items-center gap-1.5 px-3 py-2.5 bg-gray-100 text-gray-600 rounded-xl font-semibold text-sm hover:bg-gray-200 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                title="Import jadwal siaran dari file JSON"
+              >
+                <Upload className="w-4 h-4" /> {isImportingSchedules ? "Importing..." : "Import"}
+              </button>
+              <input
+                ref={scheduleImportInputRef}
+                type="file"
+                accept=".json"
+                className="hidden"
+                onChange={handleImportSchedules}
+              />
+              <button
+                onClick={openCreate}
+                disabled={announcements.length === 0}
+                className="flex flex-1 sm:flex-initial items-center justify-center gap-2 px-5 py-2.5 bg-[#004175] text-white rounded-xl font-semibold text-sm hover:bg-[#003159] transition-colors shadow-lg shadow-[#004175]/20 disabled:opacity-50"
+              >
+                <Plus className="w-4 h-4" /> Tambah Jadwal
+              </button>
+            </div>
           </header>
 
-          <div className="flex-1 overflow-y-auto p-4 sm:p-8 relative z-10 styled-scrollbar">
-            <div className="max-w-4xl mx-auto space-y-8">
+          <div className="flex-1 overflow-y-auto p-3 sm:p-6 lg:p-8 relative z-10 styled-scrollbar">
+            <div className="max-w-4xl mx-auto space-y-6 sm:space-y-8">
               {/* Stats */}
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-5">
                 {[
                   { icon: Clock, label: "Total Jadwal", val: `${schedules.length}`, color: "blue" },
                   { icon: ListTodo, label: "Menunggu Hari Ini", val: `${waitingCount}`, color: "yellow" },
                   { icon: CheckCircle2, label: "Selesai Hari Ini", val: `${doneTodayCount}`, color: "green" },
                 ].map((stat, i) => (
-                  <div key={i} className="group bg-white p-6 rounded-3xl border border-gray-100 shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all duration-300 flex items-center gap-5">
-                    <div className={`p-4 rounded-2xl transition-colors duration-300 ${stat.color === 'blue' ? 'bg-blue-50 text-[#004175]' : stat.color === 'yellow' ? 'bg-[#F9BB00]/15 text-[#9e7600]' : 'bg-green-50 text-green-600'}`}>
-                      <stat.icon className="w-6 h-6" />
+                  <div key={i} className="group bg-white p-4 sm:p-5 rounded-2xl sm:rounded-3xl border border-gray-100 shadow-sm hover:shadow-xl hover:-translate-y-0.5 transition-all duration-300 flex items-center gap-4">
+                    <div className={`p-3 sm:p-3.5 rounded-2xl transition-colors duration-300 shrink-0 ${stat.color === 'blue' ? 'bg-blue-50 text-[#004175]' : stat.color === 'yellow' ? 'bg-[#F9BB00]/15 text-[#9e7600]' : 'bg-green-50 text-green-600'}`}>
+                      <stat.icon className="w-5 h-5 sm:w-6 sm:h-6" />
                     </div>
-                    <div>
-                      <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest mb-0.5">{stat.label}</p>
-                      <p className="text-xl font-black text-[#004175]">{stat.val}</p>
+                    <div className="min-w-0">
+                      <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest mb-0.5 truncate">{stat.label}</p>
+                      <p className="text-lg sm:text-xl font-black text-[#004175]">{stat.val}</p>
                     </div>
                   </div>
                 ))}
@@ -1385,10 +2282,10 @@ export function SchedulerPage() {
                                   const names = ids.map(id => musicTracks.find(m => m.id === id)?.name || "Lagu").join(", ");
                                   return (
                                     <span
-                                      className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-indigo-50 text-indigo-700 text-[10px] font-bold border border-indigo-100/80"
+                                      className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-blue-50 text-[#004175] text-[10px] font-bold border border-blue-100/80"
                                       title={`Musik Penutup: ${names}`}
                                     >
-                                      <Music className="w-3 h-3 text-indigo-600 shrink-0" />
+                                      <Music className="w-3 h-3 text-[#004175] shrink-0" />
                                       <span className="max-w-[130px] truncate">
                                         {ids.length === 1
                                           ? (musicTracks.find(m => m.id === ids[0])?.name || 'Musik Penutup')
@@ -1403,7 +2300,7 @@ export function SchedulerPage() {
                               </div>
                             </div>
                           </div>
-                          <div className="flex items-center gap-2 self-end sm:self-auto opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
+                          <div className="flex items-center gap-2 self-end sm:self-auto opacity-100 xl:opacity-0 xl:group-hover:opacity-100 transition-opacity shrink-0">
                             {/* Tombol Putar Sekarang */}
                             <button
                               onClick={() => handlePlayNow(schedule)}
@@ -1620,11 +2517,11 @@ export function SchedulerPage() {
                 <div className="rounded-2xl border border-gray-200/80 bg-white shadow-xs overflow-hidden transition-all">
                   <div className="p-3.5 sm:p-4 flex items-center justify-between gap-3 bg-gray-50/70">
                     <div className="flex items-center gap-3">
-                      <div className={`p-2 rounded-xl transition-colors ${formHasOutro ? 'bg-indigo-600 text-white shadow-xs' : 'bg-gray-100 text-gray-400'}`}>
+                      <div className={`p-2 rounded-xl transition-colors ${formHasOutro ? 'bg-[#004175] text-white shadow-xs' : 'bg-gray-100 text-gray-400'}`}>
                         <Music className="w-4 h-4" />
                       </div>
                       <div>
-                        <p className="text-xs font-bold text-gray-900">Musik Penutup (Jam Tutup)</p>
+                        <p className="text-xs font-bold text-[#004175]">Musik Penutup (Jam Tutup)</p>
                         <p className="text-[10px] text-gray-400">Putar lagu otomatis setelah siaran selesai</p>
                       </div>
                     </div>
@@ -1639,7 +2536,7 @@ export function SchedulerPage() {
                       }}
                       aria-label="Toggle Outro Music"
                       className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
-                        formHasOutro ? 'bg-indigo-600' : 'bg-gray-200'
+                        formHasOutro ? 'bg-[#004175]' : 'bg-gray-200'
                       }`}
                     >
                       <span
@@ -1666,7 +2563,7 @@ export function SchedulerPage() {
                             <button
                               type="button"
                               onClick={() => setFormOutroMusicIds(musicTracks.map(m => m.id))}
-                              className="text-[10px] font-bold text-indigo-600 hover:text-indigo-800 px-2 py-0.5 rounded bg-indigo-50 hover:bg-indigo-100 transition-colors"
+                              className="text-[10px] font-bold text-[#004175] hover:bg-blue-100 px-2 py-0.5 rounded bg-blue-50 transition-colors"
                             >
                               Pilih Semua
                             </button>
@@ -1684,7 +2581,7 @@ export function SchedulerPage() {
                       {musicTracks.length === 0 ? (
                         <div className="p-3 bg-amber-50 border border-amber-200/80 rounded-xl text-xs text-amber-800 flex items-center justify-between">
                           <span>Belum ada lagu di koleksi musik.</span>
-                          <span className="font-bold underline text-indigo-700 cursor-pointer" onClick={() => setShowForm(false)}>
+                          <span className="font-bold underline text-[#004175] cursor-pointer" onClick={() => setShowForm(false)}>
                             Upload di Pustaka
                           </span>
                         </div>
@@ -1699,7 +2596,7 @@ export function SchedulerPage() {
                                 onClick={() => toggleTrackInSchedule(m.id)}
                                 className={`flex items-center justify-between p-2.5 rounded-xl border cursor-pointer transition-all ${
                                   isSelected
-                                    ? 'bg-indigo-50/90 border-indigo-300 text-indigo-950 shadow-xs'
+                                    ? 'bg-blue-50/90 border-[#004175]/40 text-[#004175] shadow-xs'
                                     : 'bg-white border-gray-200 text-gray-700 hover:border-gray-300 hover:bg-gray-50'
                                 }`}
                               >
@@ -1707,7 +2604,7 @@ export function SchedulerPage() {
                                   <div
                                     className={`w-5 h-5 rounded-md flex items-center justify-center shrink-0 text-[10px] font-black transition-all ${
                                       isSelected
-                                        ? 'bg-indigo-600 text-white'
+                                        ? 'bg-[#004175] text-white'
                                         : 'border border-gray-300 bg-white'
                                     }`}
                                   >
@@ -1732,14 +2629,14 @@ export function SchedulerPage() {
                                     className={`p-1.5 rounded-lg transition-all ${
                                       activeMusicPreviewId === m.id
                                         ? 'bg-red-500 text-white'
-                                        : 'bg-gray-100 hover:bg-gray-200 text-gray-700'
+                                        : 'bg-blue-50 hover:bg-blue-100 text-[#004175]'
                                     }`}
                                     title={activeMusicPreviewId === m.id ? "Hentikan pratinjau" : "Dengarkan pratinjau"}
                                   >
                                     {activeMusicPreviewId === m.id ? (
                                       <Square className="w-3.5 h-3.5 fill-white" />
                                     ) : (
-                                      <Play className="w-3.5 h-3.5 fill-gray-700" />
+                                      <Play className="w-3.5 h-3.5 fill-[#004175]" />
                                     )}
                                   </button>
                                 </div>
@@ -1764,9 +2661,9 @@ export function SchedulerPage() {
                             const totalMin = Math.floor(totalDurationSec / 60);
                             const totalRemSec = totalDurationSec % 60;
                             return (
-                              <div className="flex items-center justify-between p-2.5 bg-indigo-50/80 border border-indigo-100 rounded-xl text-xs text-indigo-900 font-semibold">
+                              <div className="flex items-center justify-between p-2.5 bg-blue-50/80 border border-blue-100 rounded-xl text-xs text-[#004175] font-semibold">
                                 <span>🎵 {formOutroMusicIds.length} lagu terpilih</span>
-                                <span className="font-mono text-indigo-700">
+                                <span className="font-mono text-[#004175]">
                                   Total Durasi: ~{totalMin}m {totalRemSec.toString().padStart(2, '0')}s
                                 </span>
                               </div>
@@ -1797,7 +2694,7 @@ export function SchedulerPage() {
                   type="button"
                   onClick={handleSubmit}
                   disabled={createSchedule.isPending || updateSchedule.isPending || !formAnnId}
-                  className="flex items-center justify-center gap-2 px-6 py-2.5 rounded-xl font-black text-xs bg-[#F9BB00] text-[#004175] shadow-md hover:bg-[#e0a800] disabled:opacity-50 transition-all"
+                  className="flex items-center justify-center gap-2 px-6 py-2.5 rounded-xl font-semibold text-xs bg-[#004175] text-white shadow-lg shadow-[#004175]/20 hover:bg-[#003159] disabled:opacity-50 transition-all"
                 >
                   <Save className="w-4 h-4" /> {editingId ? 'Simpan Jadwal' : 'Pasang Jadwal'}
                 </button>
@@ -1814,6 +2711,146 @@ export function SchedulerPage() {
         title="Hapus Jadwal"
         description="Apakah Anda yakin ingin menghapus jadwal ini? Tindakan ini tidak dapat dibatalkan."
       />
+
+      {/* Schedule Import Conflict Resolution Modal */}
+      <AnimatePresence>
+        {scheduleImportConflicts && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+              className="absolute inset-0 bg-gray-900/40 backdrop-blur-sm" onClick={() => setScheduleImportConflicts(null)} />
+            <motion.div initial={{ opacity: 0, scale: 0.95, y: 20 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              className="relative w-full max-w-lg bg-white rounded-3xl shadow-2xl overflow-hidden border border-gray-100"
+            >
+              <div className="bg-gradient-to-br from-[#004175] via-[#003866] to-[#002a4d] p-6 text-white relative overflow-hidden">
+                <div className="absolute top-0 right-0 w-32 h-32 bg-[#F9BB00]/10 rounded-full -mr-10 -mt-10 blur-2xl pointer-events-none" />
+                <div className="flex items-start justify-between gap-3 relative z-10">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2.5 bg-white/10 text-[#F9BB00] rounded-xl backdrop-blur-sm">
+                      <AlertTriangle className="w-6 h-6" />
+                    </div>
+                    <div>
+                      <h3 className="font-display text-xl font-bold">Jadwal Duplikat Ditemukan</h3>
+                      <p className="text-white/70 text-xs mt-0.5">
+                        {scheduleImportConflicts.duplicates.length} jadwal sudah ada • {scheduleImportConflicts.newItems.length} jadwal baru
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setScheduleImportConflicts(null)}
+                    disabled={isImportingSchedules}
+                    title="Tutup dialog"
+                    className="p-1.5 rounded-lg text-white/60 hover:text-white hover:bg-white/10 transition-colors"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+              </div>
+
+              <div className="p-6 space-y-4">
+                <div className="bg-[#004175]/5 border border-[#004175]/15 rounded-2xl p-4">
+                  <div className="flex items-center justify-between mb-2.5">
+                    <p className="text-xs font-bold text-[#004175] uppercase tracking-wider">Jadwal yang bentrok:</p>
+                    <span className="text-[10px] font-bold bg-[#004175]/10 text-[#004175] px-2 py-0.5 rounded-full">
+                      {scheduleImportConflicts.duplicates.length} jadwal
+                    </span>
+                  </div>
+                  <div className="max-h-32 overflow-y-auto styled-scrollbar space-y-1.5">
+                    {scheduleImportConflicts.duplicates.map((item, i) => (
+                      <div key={i} className="flex items-center justify-between text-xs text-gray-700 bg-white px-3 py-1.5 rounded-lg border border-gray-200/80 shadow-xs">
+                        <div className="flex items-center gap-2 truncate">
+                          <span className="font-mono font-bold text-[#004175] bg-blue-50 px-1.5 py-0.5 rounded text-[10px] shrink-0">
+                            {item.timeHHmm}
+                          </span>
+                          <span className="font-semibold text-gray-800 truncate">{item.announcementTitle}</span>
+                        </div>
+                        <span className="text-[10px] bg-blue-50 text-[#004175] border border-blue-200/60 px-2 py-0.5 rounded-md font-semibold shrink-0 ml-2">
+                          {item._conflictReason}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <p className="text-xs font-bold text-gray-500 uppercase tracking-wider">
+                  Pilih tindakan penanganan jadwal duplikat:
+                </p>
+
+                <div className="space-y-2.5">
+                  <button
+                    type="button"
+                    onClick={() => void executeScheduleImportStrategy("overwrite")}
+                    disabled={isImportingSchedules}
+                    className="w-full flex items-start gap-3.5 p-3.5 bg-white hover:bg-blue-50/50 border border-gray-200 hover:border-[#004175] text-left rounded-xl transition-all group disabled:opacity-50 shadow-xs hover:shadow-sm"
+                  >
+                    <div className="p-2 bg-[#004175] text-white rounded-lg group-hover:scale-105 transition-transform shrink-0 mt-0.5 shadow-sm">
+                      <RefreshCw className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="font-bold text-sm text-[#004175]">1. Timpa Jadwal Lama</span>
+                        <span className="text-[10px] bg-[#F9BB00] text-[#004175] px-2 py-0.5 rounded-full font-black">Perbarui</span>
+                      </div>
+                      <p className="text-xs text-gray-500 mt-0.5 leading-relaxed">
+                        Perbarui pengaturan jadwal lama (pengulangan, hari aktif, dan lagu penutup) dengan data dari file import.
+                      </p>
+                    </div>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => void executeScheduleImportStrategy("keep-both")}
+                    disabled={isImportingSchedules}
+                    className="w-full flex items-start gap-3.5 p-3.5 bg-white hover:bg-blue-50/50 border border-gray-200 hover:border-[#004175] text-left rounded-xl transition-all group disabled:opacity-50 shadow-xs hover:shadow-sm"
+                  >
+                    <div className="p-2 bg-[#004175]/10 text-[#004175] group-hover:bg-[#004175] group-hover:text-white rounded-lg group-hover:scale-105 transition-all shrink-0 mt-0.5 shadow-sm">
+                      <Copy className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="font-bold text-sm text-gray-800 group-hover:text-[#004175] transition-colors">2. Tetap Masukkan Duplikat</span>
+                        <span className="text-[10px] bg-blue-100 text-[#004175] px-2 py-0.5 rounded-full font-bold">Simpan Keduanya</span>
+                      </div>
+                      <p className="text-xs text-gray-500 mt-0.5 leading-relaxed">
+                        Jadwal lama tetap ada, dan jadwal dari file import ditambahkan sebagai entri jadwal tambahan.
+                      </p>
+                    </div>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => void executeScheduleImportStrategy("skip")}
+                    disabled={isImportingSchedules}
+                    className="w-full flex items-start gap-3.5 p-3.5 bg-white hover:bg-gray-50 border border-gray-200 hover:border-gray-300 text-left rounded-xl transition-all group disabled:opacity-50 shadow-xs"
+                  >
+                    <div className="p-2 bg-gray-100 text-gray-600 rounded-lg group-hover:scale-105 transition-transform shrink-0 mt-0.5 shadow-sm">
+                      <XCircle className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="font-bold text-sm text-gray-700">3. Buang Duplikat (Lewati)</span>
+                        <span className="text-[10px] bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full font-bold">Hanya Yang Baru</span>
+                      </div>
+                      <p className="text-xs text-gray-500 mt-0.5 leading-relaxed">
+                        Jangan ubah jadwal yang sudah ada. Hanya masukkan jadwal yang benar-benar belum terdaftar.
+                      </p>
+                    </div>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setScheduleImportConflicts(null)}
+                    disabled={isImportingSchedules}
+                    className="w-full py-2.5 rounded-xl font-bold text-gray-500 hover:text-[#004175] hover:bg-gray-100 border border-gray-200 transition-colors text-xs text-center mt-2"
+                  >
+                    Batalkan Proses Import
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
@@ -1828,8 +2865,29 @@ export function SettingsPage() {
     activeBellOpeningId, setActiveBellOpeningId,
     activeBellEndingId, setActiveBellEndingId,
     ttsEngine, setTtsEngine,
-    geminiApiKey, setGeminiApiKey,
+    supertonicVoiceMale, setSupertonicVoiceMale,
+    supertonicVoiceFemale, setSupertonicVoiceFemale,
+    supertonicSpeedId, setSupertonicSpeedId,
+    supertonicSpeedEn, setSupertonicSpeedEn,
+    translationEngine, setTranslationEngine,
+    autoTranslateEnabled, setAutoTranslateEnabled,
+    bellEnabled, setBellEnabled,
+    schedulerEnabled, setSchedulerEnabled,
+    voice, setVoice,
+    voiceEn, setVoiceEn,
+    outroVolume, setOutroVolume,
+    musicTracks, loadMusicTracks,
+    stopMusicPreview,
   } = useAppContext();
+  const { data: announcements = [] } = useAnnouncements();
+  const createAnnouncement = useCreateAnnouncement();
+  const updateAnnouncement = useUpdateAnnouncement();
+  const deleteAnnouncement = useDeleteAnnouncement();
+  const { data: schedules = [] } = useSchedules();
+  const createSchedule = useCreateSchedule();
+  const updateSchedule = useUpdateSchedule();
+  const deleteSchedule = useDeleteSchedule();
+
   const { toast } = useToast();
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
   const [updateInfo, setUpdateInfo] = useState<{ type: string; message: string; version?: string } | null>(null);
@@ -1839,58 +2897,97 @@ export function SettingsPage() {
   const [newLang, setNewLang] = useState<'id' | 'en' | 'both'>('id');
   const previewAudioRef = useRef<HTMLAudioElement | null>(null);
   const [activePreviewKey, setActivePreviewKey] = useState<string | null>(null);
-  const [showGeminiKey, setShowGeminiKey] = useState(false);
-  const [isEditingGeminiKey, setIsEditingGeminiKey] = useState(false);
-  const [confirmDeleteKey, setConfirmDeleteKey] = useState(false);
-  const [testingGeminiKey, setTestingGeminiKey] = useState(false);
-  const [geminiKeyTestResult, setGeminiKeyTestResult] = useState<{ valid: boolean; message: string } | null>(null);
 
-  const testGeminiKey = async (keyToTest?: string) => {
-    setTestingGeminiKey(true);
-    setGeminiKeyTestResult(null);
+  const bellImportInputRef = useRef<HTMLInputElement>(null);
+  const rulesImportInputRef = useRef<HTMLInputElement>(null);
+  const fullBackupImportInputRef = useRef<HTMLInputElement>(null);
+  const [isRestoringBackup, setIsRestoringBackup] = useState(false);
+  const [fullBackupPending, setFullBackupPending] = useState<{
+    fileName: string;
+    data: any;
+  } | null>(null);
+
+  const [samplePlayingKey, setSamplePlayingKey] = useState<string | null>(null);
+  const [sampleLoadingKey, setSampleLoadingKey] = useState<string | null>(null);
+  const sampleAudioRef = useRef<HTMLAudioElement | null>(null);
+  const sampleAbortRef = useRef<AbortController | null>(null);
+  const sampleBlobUrlRef = useRef<string | null>(null);
+
+  const stopSampleAudio = () => {
+    if (sampleAbortRef.current) {
+      sampleAbortRef.current.abort();
+      sampleAbortRef.current = null;
+    }
+    if (sampleAudioRef.current) {
+      sampleAudioRef.current.pause();
+      sampleAudioRef.current.currentTime = 0;
+      sampleAudioRef.current = null;
+    }
+    if (sampleBlobUrlRef.current) {
+      URL.revokeObjectURL(sampleBlobUrlRef.current);
+      sampleBlobUrlRef.current = null;
+    }
+    setSamplePlayingKey(null);
+    setSampleLoadingKey(null);
+  };
+
+  const playSupertonicSample = async (voiceStyle: string, lang: 'id' | 'en') => {
+    const key = `${voiceStyle}-${lang}`;
+    if (samplePlayingKey === key || sampleLoadingKey === key) {
+      stopSampleAudio();
+      return;
+    }
+
+    // Hentikan bell preview, music preview, & audio sample sebelumnya seketika untuk mencegah konflik suara bertabrakan
+    stopBellPreview();
+    stopSampleAudio();
+    stopMusicPreview();
+
+    const controller = new AbortController();
+    sampleAbortRef.current = controller;
+    setSampleLoadingKey(key);
+
     try {
-      const res = await fetch("/api/tts/test-gemini-key", {
+      const res = await fetch("/api/tts/supertonic-sample", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ key: keyToTest !== undefined ? keyToTest : geminiApiKey }),
+        body: JSON.stringify({ voiceStyle, lang, speed: lang === 'en' ? supertonicSpeedEn : supertonicSpeedId }),
+        signal: controller.signal,
       });
-      const data = await res.json();
-      setGeminiKeyTestResult({ valid: Boolean(data.valid), message: data.message || (data.valid ? "API Key valid" : "API Key tidak valid") });
-      if (data.valid) {
-        toast({ title: "Koneksi Berhasil", description: data.message });
-      } else {
-        toast({ title: "Koneksi Gagal", description: data.message, variant: "destructive" });
+
+      if (!res.ok) {
+        throw new Error("Gagal mengambil sampel suara");
       }
+
+      const blob = await res.blob();
+      if (controller.signal.aborted) return;
+
+      const url = URL.createObjectURL(blob);
+      sampleBlobUrlRef.current = url;
+      const audio = new Audio(url);
+      audio.volume = volume / 100;
+      sampleAudioRef.current = audio;
+      setSampleLoadingKey(null);
+      setSamplePlayingKey(key);
+
+      audio.onended = () => {
+        stopSampleAudio();
+      };
+      audio.onerror = () => {
+        stopSampleAudio();
+      };
+
+      await audio.play();
     } catch (err: any) {
-      const msg = err?.message || "Gagal menghubungi server";
-      setGeminiKeyTestResult({ valid: false, message: msg });
-      toast({ title: "Koneksi Gagal", description: msg, variant: "destructive" });
-    } finally {
-      setTestingGeminiKey(false);
+      if (err.name === "AbortError") return;
+      console.warn("[SIMANTU] Preview sample failed:", err);
+      toast({ title: "Gagal Memutar Sampel", description: err.message || "Pastikan server Supertonic aktif.", variant: "destructive" });
+      stopSampleAudio();
     }
   };
+
   const [deleteBellTarget, setDeleteBellTarget] = useState<import("@/context/AppContext").BellItem | null>(null);
   const [deleteRuleTarget, setDeleteRuleTarget] = useState<SpellingRule | null>(null);
-  const hideKeyTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-
-  const toggleShowGeminiKey = () => {
-    if (!showGeminiKey) {
-      setShowGeminiKey(true);
-      if (hideKeyTimeoutRef.current) clearTimeout(hideKeyTimeoutRef.current);
-      hideKeyTimeoutRef.current = setTimeout(() => {
-        setShowGeminiKey(false);
-      }, 4000);
-    } else {
-      if (hideKeyTimeoutRef.current) clearTimeout(hideKeyTimeoutRef.current);
-      setShowGeminiKey(false);
-    }
-  };
-
-  useEffect(() => {
-    return () => {
-      if (hideKeyTimeoutRef.current) clearTimeout(hideKeyTimeoutRef.current);
-    };
-  }, []);
   const customSpellingRules = spellingRules.filter(r => !r.id.startsWith('default-'));
 
   // --- Spelling rules helpers ---
@@ -1928,6 +3025,599 @@ export function SettingsPage() {
     if (activeBellEndingId === id) setActiveBellEndingId(null);
   };
 
+  // --- Per-section Export/Import in Settings (Bell & Aturan Pengucapan) ---
+  const handleExportBells = () => {
+    if (bellLibrary.length === 0) return;
+    const payload = {
+      type: "simantu_bells",
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      activeBellOpeningId,
+      activeBellEndingId,
+      bellLibrary,
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `simantu-bell-${format(new Date(), "yyyy-MM-dd")}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast({
+      title: "✅ Export Bell Berhasil",
+      description: `${bellLibrary.length} file bell kustom berhasil diexport.`,
+    });
+  };
+
+  const handleImportBells = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = "";
+    try {
+      const parsed = JSON.parse(await file.text());
+      const items: BellItem[] = Array.isArray(parsed)
+        ? parsed
+        : Array.isArray(parsed?.bellLibrary)
+          ? parsed.bellLibrary
+          : [];
+      const valid = items.filter(
+        (b) => b && typeof b.name === "string" && typeof b.data === "string" && b.data.startsWith("data:")
+      );
+      if (valid.length === 0) {
+        toast({
+          title: "Gagal Import Bell",
+          description: "File JSON tidak berisi data audio bell yang valid.",
+          variant: "destructive",
+        });
+        return;
+      }
+      const merged = [...bellLibrary];
+      let added = 0;
+      let updated = 0;
+      for (const item of valid) {
+        const idx = merged.findIndex((b) => b.name.trim().toLowerCase() === item.name.trim().toLowerCase());
+        if (idx >= 0) {
+          merged[idx] = { ...merged[idx], data: item.data };
+          updated++;
+        } else {
+          merged.push({ id: item.id || crypto.randomUUID(), name: item.name.trim(), data: item.data });
+          added++;
+        }
+      }
+      setBellLibrary(merged);
+      if (parsed?.activeBellOpeningId && merged.some((b) => b.id === parsed.activeBellOpeningId)) {
+        setActiveBellOpeningId(parsed.activeBellOpeningId);
+      }
+      if (parsed?.activeBellEndingId && merged.some((b) => b.id === parsed.activeBellEndingId)) {
+        setActiveBellEndingId(parsed.activeBellEndingId);
+      }
+      toast({
+        title: "✅ Import Bell Selesai",
+        description: `${added} bell baru ditambahkan, ${updated} bell diperbarui.`,
+      });
+    } catch (err: any) {
+      toast({
+        title: "Gagal Import Bell",
+        description: err?.message || "Pastikan format file JSON bell valid.",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const handleExportRules = () => {
+    if (customSpellingRules.length === 0) return;
+    const payload = {
+      type: "simantu_spelling_rules",
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      spellingRules: customSpellingRules,
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `simantu-aturan-ejaan-${format(new Date(), "yyyy-MM-dd")}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast({
+      title: "✅ Export Aturan Pengucapan Berhasil",
+      description: `${customSpellingRules.length} aturan pengucapan berhasil diexport.`,
+    });
+  };
+
+  const handleImportRules = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = "";
+    try {
+      const parsed = JSON.parse(await file.text());
+      const items: SpellingRule[] = Array.isArray(parsed)
+        ? parsed
+        : Array.isArray(parsed?.spellingRules)
+          ? parsed.spellingRules
+          : [];
+      const valid = items.filter(
+        (r) => r && typeof r.from === "string" && r.from.trim() && !String(r.id || "").startsWith("default-")
+      );
+      if (valid.length === 0) {
+        toast({
+          title: "Gagal Import Aturan",
+          description: "File JSON tidak berisi aturan pengucapan kustom yang valid.",
+          variant: "destructive",
+        });
+        return;
+      }
+      const merged = [...customSpellingRules];
+      let added = 0;
+      let updated = 0;
+      for (const r of valid) {
+        const lang = r.lang === "en" || r.lang === "both" ? r.lang : "id";
+        const idx = merged.findIndex(
+          (m) => m.from.trim().toLowerCase() === r.from.trim().toLowerCase() && (m.lang || "id") === lang
+        );
+        if (idx >= 0) {
+          merged[idx] = { ...merged[idx], to: r.to ?? "", enabled: r.enabled ?? true, lang };
+          updated++;
+        } else {
+          merged.push({
+            id: r.id || crypto.randomUUID(),
+            from: r.from.trim(),
+            to: r.to ?? "",
+            enabled: r.enabled ?? true,
+            lang,
+          });
+          added++;
+        }
+      }
+      setSpellingRules(merged);
+      toast({
+        title: "✅ Import Aturan Pengucapan Selesai",
+        description: `${added} aturan baru ditambahkan, ${updated} aturan diperbarui.`,
+      });
+    } catch (err: any) {
+      toast({
+        title: "Gagal Import Aturan",
+        description: err?.message || "Pastikan format file JSON aturan valid.",
+        variant: "destructive",
+      });
+    }
+  };
+
+  // --- Full All-in-One System Export & Import ---
+  const handleExportAllSystem = () => {
+    const fullPayload = {
+      type: "simantu_full_backup",
+      version: 1,
+      appVersion: APP_VERSION,
+      exportedAt: new Date().toISOString(),
+      settings: {
+        ttsEngine,
+        supertonicVoiceMale,
+        supertonicVoiceFemale,
+        supertonicSpeedId,
+        supertonicSpeedEn,
+        translationEngine,
+        autoTranslateEnabled,
+        volume,
+        outroVolume,
+        audioOutputId,
+        bellEnabled,
+        activeBellOpeningId,
+        activeBellEndingId,
+        schedulerEnabled,
+        voice,
+        voiceEn,
+      },
+      spellingRules: customSpellingRules,
+      bellLibrary,
+      announcements: announcements.map((a) => ({
+        id: a.id,
+        title: a.title,
+        contentId: a.contentId,
+        contentEn: a.contentEn,
+        voice: a.voice,
+        isFavorite: a.isFavorite ?? false,
+      })),
+      musicTracks: musicTracks.map((m) => ({
+        id: m.id,
+        name: m.name,
+        size: m.size,
+        duration: m.duration,
+        data: m.data,
+        createdAt: m.createdAt,
+      })),
+      schedules: schedules.map((s) => {
+        const ann = announcements.find((a) => a.id === s.announcementId);
+        const ids = s.outroMusicIds && s.outroMusicIds.length > 0
+          ? s.outroMusicIds
+          : (s.outroMusicId ? [s.outroMusicId] : []);
+        const outroMusicNames = ids
+          .map((id) => musicTracks.find((m) => m.id === id)?.name)
+          .filter(Boolean) as string[];
+        return {
+          playTime: typeof s.playTime === "string" ? s.playTime : new Date(s.playTime).toISOString(),
+          timeHHmm: format(new Date(s.playTime), "HH:mm"),
+          status: s.status || "Waiting",
+          recurring: Boolean(s.recurring),
+          daysOfWeek: s.daysOfWeek || [],
+          outroMusicId: s.outroMusicId || null,
+          outroMusicIds: ids,
+          outroMusicNames,
+          announcementId: s.announcementId,
+          announcementSnapshot: ann
+            ? {
+                title: ann.title,
+                contentId: ann.contentId,
+                contentEn: ann.contentEn,
+                voice: ann.voice || "Pria/Pria",
+                isFavorite: ann.isFavorite ?? false,
+              }
+            : null,
+        };
+      }),
+    };
+
+    const blob = new Blob([JSON.stringify(fullPayload, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `simantu-backup-keseluruhan-${format(new Date(), "yyyy-MM-dd")}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast({
+      title: "✅ Export Keseluruhan Sistem Berhasil",
+      description: "Seluruh pengaturan, naskah, jadwal, musik, bell, dan aturan ejaan telah disimpan ke 1 file JSON.",
+    });
+  };
+
+  const handleImportAllSystemSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = "";
+    try {
+      const parsed = JSON.parse(await file.text());
+      const hasAnySection =
+        parsed &&
+        typeof parsed === "object" &&
+        (parsed.settings ||
+          Array.isArray(parsed.announcements) ||
+          Array.isArray(parsed.schedules) ||
+          Array.isArray(parsed.musicTracks) ||
+          Array.isArray(parsed.bellLibrary) ||
+          Array.isArray(parsed.spellingRules));
+
+      if (!hasAnySection) {
+        toast({
+          title: "File Backup Tidak Valid",
+          description: "Pastikan Anda memilih file JSON hasil Export dari SIMANTU.",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      setFullBackupPending({ fileName: file.name, data: parsed });
+    } catch (err: any) {
+      toast({
+        title: "Gagal Membaca File Backup",
+        description: err?.message || "Pastikan file berformat JSON yang valid.",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const executeFullBackupRestore = async (mode: "merge" | "replace") => {
+    if (!fullBackupPending) return;
+    const { data } = fullBackupPending;
+    setFullBackupPending(null);
+    setIsRestoringBackup(true);
+
+    try {
+      // 1. Restore Settings
+      if (data.settings && typeof data.settings === "object") {
+        const s = data.settings;
+        if (typeof s.ttsEngine === "string" && ["edge", "supertonic"].includes(s.ttsEngine)) {
+          setTtsEngine(s.ttsEngine);
+        }
+        if (typeof s.supertonicVoiceMale === "string") setSupertonicVoiceMale(s.supertonicVoiceMale);
+        if (typeof s.supertonicVoiceFemale === "string") setSupertonicVoiceFemale(s.supertonicVoiceFemale);
+        if (typeof s.supertonicSpeedId === "number") setSupertonicSpeedId(s.supertonicSpeedId);
+        if (typeof s.supertonicSpeedEn === "number") setSupertonicSpeedEn(s.supertonicSpeedEn);
+        if (s.translationEngine === "google" || s.translationEngine === "deepl") {
+          setTranslationEngine(s.translationEngine);
+        }
+        if (typeof s.autoTranslateEnabled === "boolean") setAutoTranslateEnabled(s.autoTranslateEnabled);
+        if (typeof s.volume === "number") setVolume(Math.max(0, Math.min(100, s.volume)));
+        if (typeof s.outroVolume === "number") setOutroVolume(Math.max(0, Math.min(1, s.outroVolume)));
+        if (typeof s.audioOutputId === "string") setAudioOutputId(s.audioOutputId);
+        if (typeof s.bellEnabled === "boolean") setBellEnabled(s.bellEnabled);
+        if (typeof s.schedulerEnabled === "boolean") setSchedulerEnabled(s.schedulerEnabled);
+        if (typeof s.voice === "string") setVoice(s.voice);
+        if (typeof s.voiceEn === "string") setVoiceEn(s.voiceEn);
+      }
+
+      // 2. Restore Bell Library
+      if (Array.isArray(data.bellLibrary)) {
+        const validBells = data.bellLibrary.filter(
+          (b: any) => b && typeof b.name === "string" && typeof b.data === "string" && b.data.startsWith("data:")
+        );
+        if (mode === "replace") {
+          setBellLibrary(validBells);
+        } else {
+          const mergedBells = [...bellLibrary];
+          for (const item of validBells) {
+            const idx = mergedBells.findIndex((b) => b.name.trim().toLowerCase() === item.name.trim().toLowerCase());
+            if (idx >= 0) {
+              mergedBells[idx] = { ...mergedBells[idx], data: item.data };
+            } else {
+              mergedBells.push({ id: item.id || crypto.randomUUID(), name: item.name.trim(), data: item.data });
+            }
+          }
+          setBellLibrary(mergedBells);
+        }
+        if (data.settings?.activeBellOpeningId !== undefined) {
+          setActiveBellOpeningId(data.settings.activeBellOpeningId);
+        }
+        if (data.settings?.activeBellEndingId !== undefined) {
+          setActiveBellEndingId(data.settings.activeBellEndingId);
+        }
+      }
+
+      // 3. Restore Spelling Rules
+      if (Array.isArray(data.spellingRules)) {
+        const validRules = data.spellingRules.filter(
+          (r: any) => r && typeof r.from === "string" && r.from.trim() && !String(r.id || "").startsWith("default-")
+        );
+        if (mode === "replace") {
+          setSpellingRules(validRules);
+        } else {
+          const mergedRules = [...customSpellingRules];
+          for (const r of validRules) {
+            const lang = r.lang === "en" || r.lang === "both" ? r.lang : "id";
+            const idx = mergedRules.findIndex(
+              (m) => m.from.trim().toLowerCase() === r.from.trim().toLowerCase() && (m.lang || "id") === lang
+            );
+            if (idx >= 0) {
+              mergedRules[idx] = { ...mergedRules[idx], to: r.to ?? "", enabled: r.enabled ?? true, lang };
+            } else {
+              mergedRules.push({
+                id: r.id || crypto.randomUUID(),
+                from: r.from.trim(),
+                to: r.to ?? "",
+                enabled: r.enabled ?? true,
+                lang,
+              });
+            }
+          }
+          setSpellingRules(mergedRules);
+        }
+      }
+
+      // 4. Restore Music Tracks (IndexedDB)
+      const currentMusicList: MusicTrack[] = mode === "replace" ? [] : [...musicTracks];
+      if (Array.isArray(data.musicTracks)) {
+        const validTracks = data.musicTracks.filter(
+          (t: any) => t && typeof t.name === "string" && typeof t.data === "string" && t.data.startsWith("data:")
+        );
+        if (mode === "replace") {
+          await clearAllMusicTracks();
+          for (const tr of validTracks) {
+            const trackObj: MusicTrack = {
+              id: tr.id || `music-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+              name: tr.name.trim(),
+              size: typeof tr.size === "number" ? tr.size : Math.round((tr.data.length * 3) / 4),
+              duration: typeof tr.duration === "number" ? tr.duration : undefined,
+              data: tr.data,
+              createdAt: tr.createdAt || new Date().toISOString(),
+            };
+            await saveMusicTrack(trackObj);
+            currentMusicList.push(trackObj);
+          }
+        } else {
+          for (const tr of validTracks) {
+            const existingIdx = currentMusicList.findIndex(
+              (m) => m.name.trim().toLowerCase() === tr.name.trim().toLowerCase()
+            );
+            const trackObj: MusicTrack = {
+              id: existingIdx >= 0 ? currentMusicList[existingIdx].id : (tr.id || `music-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`),
+              name: tr.name.trim(),
+              size: typeof tr.size === "number" ? tr.size : Math.round((tr.data.length * 3) / 4),
+              duration: typeof tr.duration === "number" ? tr.duration : undefined,
+              data: tr.data,
+              createdAt: tr.createdAt || new Date().toISOString(),
+            };
+            await saveMusicTrack(trackObj);
+            if (existingIdx >= 0) {
+              currentMusicList[existingIdx] = trackObj;
+            } else {
+              currentMusicList.push(trackObj);
+            }
+          }
+        }
+        await loadMusicTracks();
+      }
+
+      // 5. Restore Announcements
+      const currentAnns: any[] = [];
+      if (Array.isArray(data.announcements)) {
+        const validAnns = data.announcements.filter((a: any) => a && typeof a.title === "string");
+        if (mode === "replace") {
+          for (const existing of announcements) {
+            await deleteAnnouncement.mutateAsync(existing.id);
+          }
+          for (const item of validAnns) {
+            const created = await createAnnouncement.mutateAsync({
+              title: item.title.trim(),
+              contentId: item.contentId || "",
+              contentEn: item.contentEn || "",
+              voice: item.voice || "Pria/Pria",
+              isFavorite: Boolean(item.isFavorite),
+            });
+            currentAnns.push(created);
+          }
+        } else {
+          currentAnns.push(...announcements);
+          for (const item of validAnns) {
+            const titleLower = item.title.trim().toLowerCase();
+            const existingIdx = currentAnns.findIndex((a) => a.title.trim().toLowerCase() === titleLower);
+            if (existingIdx >= 0) {
+              const updated = await updateAnnouncement.mutateAsync({
+                id: currentAnns[existingIdx].id,
+                title: item.title.trim(),
+                contentId: item.contentId ?? currentAnns[existingIdx].contentId,
+                contentEn: item.contentEn ?? currentAnns[existingIdx].contentEn,
+                voice: item.voice ?? currentAnns[existingIdx].voice,
+                isFavorite: item.isFavorite ?? currentAnns[existingIdx].isFavorite,
+              });
+              currentAnns[existingIdx] = updated;
+            } else {
+              const created = await createAnnouncement.mutateAsync({
+                title: item.title.trim(),
+                contentId: item.contentId || "",
+                contentEn: item.contentEn || "",
+                voice: item.voice || "Pria/Pria",
+                isFavorite: Boolean(item.isFavorite),
+              });
+              currentAnns.push(created);
+            }
+          }
+        }
+      } else {
+        currentAnns.push(...announcements);
+      }
+
+      // 6. Restore Schedules
+      if (Array.isArray(data.schedules)) {
+        if (mode === "replace") {
+          for (const existingSch of schedules) {
+            await deleteSchedule.mutateAsync(existingSch.id);
+          }
+        }
+        const existingSchedulesList = mode === "replace" ? [] : [...schedules];
+
+        for (const item of data.schedules) {
+          let resolvedAnn = null;
+          const snap = item.announcementSnapshot;
+          if (snap && typeof snap.title === "string") {
+            const titleLower = snap.title.trim().toLowerCase();
+            resolvedAnn = currentAnns.find((a) => a.title.trim().toLowerCase() === titleLower);
+            if (!resolvedAnn && (snap.contentId || snap.contentEn)) {
+              const created = await createAnnouncement.mutateAsync({
+                title: snap.title.trim(),
+                contentId: snap.contentId || "",
+                contentEn: snap.contentEn || "",
+                voice: snap.voice || "Pria/Pria",
+                isFavorite: Boolean(snap.isFavorite),
+              });
+              currentAnns.push(created);
+              resolvedAnn = created;
+            }
+          }
+          if (!resolvedAnn && typeof item.announcementId === "number") {
+            resolvedAnn = currentAnns.find((a) => a.id === item.announcementId) || null;
+          }
+          if (!resolvedAnn && currentAnns.length > 0) {
+            resolvedAnn = currentAnns[0];
+          }
+          if (!resolvedAnn) continue;
+
+          const timeHHmm =
+            typeof item.timeHHmm === "string" && /^\d{2}:\d{2}$/.test(item.timeHHmm)
+              ? item.timeHHmm
+              : item.playTime
+                ? format(new Date(item.playTime), "HH:mm")
+                : "08:00";
+
+          const recurring = Boolean(item.recurring);
+          const daysOfWeek = Array.isArray(item.daysOfWeek)
+            ? item.daysOfWeek.filter((d: any) => Number.isInteger(d) && d >= 0 && d <= 6)
+            : [];
+
+          // Compute next playTime
+          const [hStr, mStr] = timeHHmm.split(":");
+          const now = new Date();
+          const candidate = new Date(now);
+          candidate.setHours(parseInt(hStr, 10), parseInt(mStr, 10), 0, 0);
+          if (!recurring || daysOfWeek.length === 0) {
+            if (candidate <= now) candidate.setDate(candidate.getDate() + 1);
+          } else {
+            for (let i = 0; i < 14; i++) {
+              if (candidate > now && daysOfWeek.includes(candidate.getDay())) break;
+              candidate.setDate(candidate.getDate() + 1);
+            }
+          }
+
+          // Resolve music IDs
+          const rawIds: string[] = Array.isArray(item.outroMusicIds)
+            ? item.outroMusicIds
+            : item.outroMusicId
+              ? [item.outroMusicId]
+              : [];
+          const rawNames: string[] = Array.isArray(item.outroMusicNames) ? item.outroMusicNames : [];
+          const resolvedMusicIds: string[] = [];
+          rawIds.forEach((id, idx) => {
+            if (currentMusicList.some((m) => m.id === id)) {
+              resolvedMusicIds.push(id);
+            } else if (rawNames[idx]) {
+              const byName = currentMusicList.find(
+                (m) => m.name.trim().toLowerCase() === String(rawNames[idx]).trim().toLowerCase()
+              );
+              if (byName && !resolvedMusicIds.includes(byName.id)) {
+                resolvedMusicIds.push(byName.id);
+              }
+            }
+          });
+          if (resolvedMusicIds.length === 0 && rawNames.length > 0) {
+            for (const nm of rawNames) {
+              const byName = currentMusicList.find(
+                (m) => m.name.trim().toLowerCase() === String(nm).trim().toLowerCase()
+              );
+              if (byName && !resolvedMusicIds.includes(byName.id)) {
+                resolvedMusicIds.push(byName.id);
+              }
+            }
+          }
+
+          const schedulePayload = {
+            announcementId: resolvedAnn.id,
+            playTime: candidate.toISOString(),
+            status: "Waiting" as const,
+            recurring,
+            daysOfWeek: recurring ? daysOfWeek : [],
+            outroMusicId: resolvedMusicIds[0] || null,
+            outroMusicIds: resolvedMusicIds,
+            outroMusicDuration: 0,
+          };
+
+          const existingMatch = existingSchedulesList.find(
+            (s) => s.announcementId === resolvedAnn.id && format(new Date(s.playTime), "HH:mm") === timeHHmm
+          );
+
+          if (existingMatch && mode === "merge") {
+            await updateSchedule.mutateAsync({ id: existingMatch.id, ...schedulePayload });
+          } else {
+            await createSchedule.mutateAsync(schedulePayload);
+          }
+        }
+      }
+
+      toast({
+        title: "✅ Pemulihan Sistem Selesai",
+        description:
+          mode === "replace"
+            ? "Seluruh pengaturan dan data berhasil dipulihkan sepenuhnya dari file backup."
+            : "Seluruh pengaturan dan data berhasil digabungkan dan diperbarui.",
+      });
+    } catch (err: any) {
+      toast({
+        title: "Gagal Memulihkan Data",
+        description: err?.message || "Terjadi kesalahan saat memproses file backup.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsRestoringBackup(false);
+    }
+  };
+
   const stopBellPreview = () => {
     if (previewAudioRef.current) {
       previewAudioRef.current.pause();
@@ -1940,10 +3630,13 @@ export function SettingsPage() {
   const previewBell = (id: string | null, defaultUrl: string, key: string) => {
     if (activePreviewKey === key && previewAudioRef.current && !previewAudioRef.current.paused) {
       stopBellPreview();
+      stopSampleAudio();
       return;
     }
 
     stopBellPreview();
+    stopSampleAudio();
+    stopMusicPreview();
     const src = id ? (bellLibrary.find(b => b.id === id)?.data ?? defaultUrl) : defaultUrl;
     const audio = new Audio(src);
     audio.volume = volume / 100;
@@ -1992,266 +3685,354 @@ export function SettingsPage() {
   }, []);
 
   useEffect(() => {
-    return () => stopBellPreview();
+    return () => {
+      stopBellPreview();
+      stopSampleAudio();
+    };
   }, []);
 
   return (
-    <div className="h-full w-full bg-neutral-900 flex p-2 sm:p-4 font-sans selection:bg-[#F9BB00] selection:text-[#004175]">
-      <div className="flex-1 w-full max-w-[1920px] mx-auto bg-gray-50 rounded-2xl shadow-2xl overflow-hidden flex flex-col md:flex-row relative ring-1 ring-white/10">
+    <div className="h-full w-full bg-neutral-900 flex p-1.5 sm:p-3 lg:p-4 font-sans selection:bg-[#F9BB00] selection:text-[#004175]">
+      <div className="flex-1 w-full max-w-[2560px] mx-auto bg-gray-50 rounded-2xl shadow-2xl overflow-hidden flex flex-col md:flex-row relative ring-1 ring-white/10">
         <Sidebar />
 
-        <main className="flex-1 flex flex-col min-w-0 overflow-hidden relative">
+        <main className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden relative">
           <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_120%,rgba(0,65,117,0.05),transparent)] pointer-events-none" />
 
-          <header className="min-h-24 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between px-4 sm:px-8 py-4 border-b border-gray-100 bg-white/50 backdrop-blur-md shrink-0 relative z-10">
+          <header className="min-h-20 sm:min-h-24 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between px-4 sm:px-6 lg:px-8 py-3.5 sm:py-4 border-b border-gray-100 bg-white/50 backdrop-blur-md shrink-0 relative z-10">
             <div>
-              <div className="flex items-center gap-2 mb-1">
+              <div className="flex items-center gap-2 mb-0.5 sm:mb-1">
                 <div className="w-2 h-2 rounded-full bg-gray-400" />
-                <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Audio Config</span>
+                <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Audio &amp; System Config</span>
               </div>
-              <h1 className="font-display text-2xl sm:text-3xl font-black text-[#004175] tracking-tight">Pengaturan Suara</h1>
-              <p className="text-xs text-gray-500 font-medium">Konfigurasi suara dan perangkat output audio</p>
+              <h1 className="font-display text-xl sm:text-2xl lg:text-3xl font-black text-[#004175] tracking-tight">Pengaturan Suara</h1>
+              <p className="text-xs text-gray-500 font-medium hidden sm:block">Konfigurasi suara, perangkat output audio, dan pencadangan sistem</p>
             </div>
           </header>
 
-          <div className="flex-1 overflow-y-auto p-4 sm:p-8 relative z-10 styled-scrollbar">
-            <div className="max-w-2xl mx-auto space-y-8">
+          <div className="flex-1 overflow-y-auto p-3 sm:p-6 lg:p-8 relative z-10 styled-scrollbar">
+            <div className="max-w-4xl mx-auto space-y-6 sm:space-y-8">
+
+              {/* 0. KARTU BACKUP & RESTORE KESELURUHAN SISTEM (ALL-IN-ONE) */}
+              <div className="bg-white p-5 sm:p-6 rounded-[1.5rem] border border-gray-100 shadow-sm space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-[#004175] to-[#002a4d] text-[#F9BB00] flex items-center justify-center shadow-sm shrink-0">
+                      <FileCheck2 className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <h3 className="font-black text-[#004175] text-base sm:text-lg uppercase tracking-tight">Backup &amp; Restore Keseluruhan (All-in-One)</h3>
+                      <p className="text-[11px] text-gray-400 font-medium">
+                        Simpan atau pulihkan seluruh data aplikasi (Pengaturan, Naskah, Jadwal, Musik, Bell, &amp; Aturan Ejaan) dalam satu file
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={handleExportAllSystem}
+                      className="flex-1 sm:flex-initial flex items-center justify-center gap-1.5 px-3.5 py-2 bg-blue-50 text-[#004175] border border-blue-200/70 rounded-xl font-bold text-xs hover:bg-blue-100 transition-colors"
+                    >
+                      <Download className="w-3.5 h-3.5" /> Export Keseluruhan
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => fullBackupImportInputRef.current?.click()}
+                      disabled={isRestoringBackup}
+                      className="flex-1 sm:flex-initial flex items-center justify-center gap-1.5 px-3.5 py-2 bg-[#004175] text-white rounded-xl font-bold text-xs hover:bg-[#003159] shadow-sm transition-colors disabled:opacity-50"
+                    >
+                      <Upload className="w-3.5 h-3.5" /> {isRestoringBackup ? "Memulihkan..." : "Import Keseluruhan"}
+                    </button>
+                    <input
+                      ref={fullBackupImportInputRef}
+                      type="file"
+                      accept=".json"
+                      className="hidden"
+                      onChange={handleImportAllSystemSelect}
+                    />
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 pt-1">
+                  {[
+                    { label: "Template Naskah", val: `${announcements.length} item` },
+                    { label: "Jadwal Siaran", val: `${schedules.length} jadwal` },
+                    { label: "Musik Penutup", val: `${musicTracks.length} lagu` },
+                    { label: "File Bell Kustom", val: `${bellLibrary.length} file` },
+                    { label: "Aturan Ejaan", val: `${customSpellingRules.length} aturan` },
+                  ].map((item, idx) => (
+                    <div key={idx} className="p-2.5 rounded-xl bg-gray-50 border border-gray-100">
+                      <p className="text-[9px] font-bold text-gray-400 uppercase tracking-wider truncate">{item.label}</p>
+                      <p className="text-xs font-black text-[#004175] mt-0.5">{item.val}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
 
               {/* 1. KARTU MESIN SUARA (TTS ENGINE) */}
-              <div className="bg-white p-6 rounded-[1.5rem] border border-gray-100 shadow-sm space-y-5">
-                <div className="flex items-center gap-3">
-                  <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-[#004175] to-[#002a4d] text-[#F9BB00] flex items-center justify-center shadow-sm shrink-0">
-                    <Mic className="w-4 h-4" />
+              <div className="bg-white p-5 rounded-[1.5rem] border border-gray-100 shadow-sm space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-[#004175] to-[#002a4d] text-[#F9BB00] flex items-center justify-center shadow-sm shrink-0">
+                      <Mic className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <h3 className="font-black text-[#004175] text-base sm:text-lg uppercase tracking-tight">Mesin & Karakter Suara (TTS)</h3>
+                      <p className="text-[11px] text-gray-400 font-medium">Pilih model sintesis suara, karakter penyiar, dan tempo bicara</p>
+                    </div>
                   </div>
-                  <div>
-                    <h3 className="font-black text-[#004175] text-lg uppercase tracking-tight">Mesin Suara (Text-to-Speech)</h3>
-                    <p className="text-[11px] text-gray-400 font-medium">Pilih mesin teknologi untuk sintesis suara pengumuman</p>
+
+                  {/* Segmented Selector Model TTS */}
+                  <div className="grid grid-cols-2 bg-gray-100 p-1 rounded-xl border border-gray-200/80 shrink-0 sm:w-72">
+                    {[
+                      { value: 'edge', label: 'Edge TTS', sub: 'Cloud Neural' },
+                      { value: 'supertonic', label: 'Supertonic 3', sub: 'Lokal / Offline' },
+                    ].map(eng => {
+                      const active = ttsEngine === eng.value;
+                      return (
+                        <button
+                          key={eng.value}
+                          type="button"
+                          onClick={() => setTtsEngine(eng.value)}
+                          className={`relative px-3 py-1.5 rounded-lg text-left transition-all flex items-center justify-between gap-1.5 ${
+                            active
+                              ? 'bg-[#004175] text-white shadow-sm'
+                              : 'text-gray-600 hover:text-gray-900'
+                          }`}
+                        >
+                          <div className="min-w-0">
+                            <p className="text-xs font-extrabold leading-tight truncate">{eng.label}</p>
+                            <p className={`text-[9px] leading-tight truncate ${active ? 'text-blue-200' : 'text-gray-400'}`}>{eng.sub}</p>
+                          </div>
+                          {active && <span className="w-2 h-2 rounded-full bg-[#F9BB00] shrink-0" />}
+                        </button>
+                      );
+                    })}
                   </div>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 pt-1">
+                {ttsEngine === 'edge' ? (
+                  <div className="bg-blue-50/60 border border-blue-100 rounded-xl px-3.5 py-2.5 flex items-center justify-between gap-3">
+                    <p className="text-[11px] text-[#004175]">
+                      <strong>Edge TTS (Cloud)</strong> aktif — menggunakan suara neural Microsoft (Ardi/Gadis untuk ID, Andrew/Ava untuk EN). Membutuhkan koneksi internet.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="space-y-3 pt-1 animate-in fade-in duration-200">
+                    {/* Karakter Suara Pria & Wanita (2 Kolom Kompak) */}
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      {([
+                        {
+                          title: "Suara Pria",
+                          selected: supertonicVoiceMale,
+                          onSelect: setSupertonicVoiceMale,
+                          options: [
+                            { id: "M1", desc: "Tegas & resmi" },
+                            { id: "M2", desc: "Rileks & alami" },
+                            { id: "M3", desc: "Tenang & dalam" },
+                            { id: "M4", desc: "Dinamis & tegas" },
+                            { id: "M5", desc: "Lembut & ramah" },
+                          ],
+                        },
+                        {
+                          title: "Suara Wanita",
+                          selected: supertonicVoiceFemale,
+                          onSelect: setSupertonicVoiceFemale,
+                          options: [
+                            { id: "F1", desc: "Jernih & resmi" },
+                            { id: "F2", desc: "Ekspresif & luwes" },
+                            { id: "F3", desc: "Tenang & santai" },
+                            { id: "F4", desc: "Artikulasi terang" },
+                            { id: "F5", desc: "Timbre berwibawa" },
+                          ],
+                        },
+                      ]).map((group) => {
+                        const activeItem = group.options.find(o => o.id === group.selected) || group.options[0];
+                        const idKey = `${activeItem.id}-id`;
+                        const enKey = `${activeItem.id}-en`;
+                        return (
+                          <div key={group.title} className="p-3.5 rounded-xl border border-gray-200 bg-gray-50/60 space-y-2.5">
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="min-w-0">
+                                <div className="flex items-center gap-1.5">
+                                  <span className="text-xs font-extrabold text-[#004175]">{group.title}</span>
+                                  <span className="text-[10px] font-bold text-gray-500 truncate">
+                                    · {activeItem.id} ({activeItem.desc})
+                                  </span>
+                                </div>
+                              </div>
+                              {/* Tombol Tes Sampel untuk suara yang sedang dipilih */}
+                              <div className="flex items-center gap-1 shrink-0">
+                                {(['id', 'en'] as const).map((lng) => {
+                                  const key = lng === 'id' ? idKey : enKey;
+                                  const isLoading = sampleLoadingKey === key;
+                                  const isPlaying = samplePlayingKey === key;
+                                  return (
+                                    <button
+                                      key={lng}
+                                      type="button"
+                                      disabled={sampleLoadingKey !== null && !isLoading}
+                                      onClick={() => playSupertonicSample(activeItem.id, lng)}
+                                      className={`px-2 py-1 rounded-lg border text-[10px] font-bold flex items-center gap-1 disabled:opacity-50 transition-all ${
+                                        isPlaying
+                                          ? 'bg-red-50 text-red-600 border-red-200 hover:bg-red-100'
+                                          : 'bg-white text-[#004175] border-gray-200 hover:bg-blue-50 hover:border-blue-200'
+                                      }`}
+                                      title={`Tes suara ${activeItem.id} (${lng.toUpperCase()})`}
+                                    >
+                                      {isLoading ? (
+                                        <RefreshCw className="w-2.5 h-2.5 animate-spin text-[#004175]" />
+                                      ) : isPlaying ? (
+                                        <Square className="w-2.5 h-2.5 fill-red-500 text-red-500" />
+                                      ) : (
+                                        <Play className="w-2.5 h-2.5 fill-[#004175] text-[#004175]" />
+                                      )}
+                                      Tes {lng.toUpperCase()}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            </div>
+
+                            {/* Deretan Pill M1-M5 / F1-F5 */}
+                            <div className="grid grid-cols-5 gap-1.5">
+                              {group.options.map((opt) => {
+                                const isSelected = group.selected === opt.id;
+                                return (
+                                  <button
+                                    key={opt.id}
+                                    type="button"
+                                    onClick={() => group.onSelect(opt.id)}
+                                    className={`py-1.5 px-1 rounded-lg border text-center transition-all ${
+                                      isSelected
+                                        ? 'border-[#004175] bg-[#004175] text-white shadow-xs'
+                                        : 'border-gray-200 bg-white text-gray-700 hover:border-gray-300 hover:bg-gray-50'
+                                    }`}
+                                    title={`${opt.id}: ${opt.desc}`}
+                                  >
+                                    <div className="text-xs font-black leading-tight flex items-center justify-center gap-1">
+                                      {opt.id}
+                                      {isSelected && <span className="w-1.5 h-1.5 rounded-full bg-[#F9BB00]" />}
+                                    </div>
+                                    <div className={`text-[9px] leading-tight truncate mt-0.5 ${isSelected ? 'text-blue-100' : 'text-gray-400'}`}>
+                                      {opt.desc.split(' ')[0]}
+                                    </div>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {/* Baris Kecepatan Bicara (ID & EN dalam 1 kotak kompak) */}
+                    <div className="p-3.5 rounded-xl border border-gray-200 bg-gray-50/60">
+                      <div className="flex items-center justify-between gap-2 mb-2.5">
+                        <div className="flex items-center gap-1.5">
+                          <SlidersHorizontal className="w-3.5 h-3.5 text-[#004175]" />
+                          <span className="text-xs font-extrabold text-[#004175]">Kecepatan Bicara</span>
+                          <span className="text-[10px] text-gray-400 hidden sm:inline">· Geser ke kiri untuk memperlambat tempo</span>
+                        </div>
+                        {(supertonicSpeedId !== 1 || supertonicSpeedEn !== 1) && (
+                          <button
+                            type="button"
+                            onClick={() => { setSupertonicSpeedId(1); setSupertonicSpeedEn(1); }}
+                            className="text-[10px] font-bold text-[#004175] hover:underline"
+                          >
+                            Reset (1.0×)
+                          </button>
+                        )}
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        {([
+                          { lang: "id" as const, label: "Indonesia", value: supertonicSpeedId, set: setSupertonicSpeedId },
+                          { lang: "en" as const, label: "Inggris", value: supertonicSpeedEn, set: setSupertonicSpeedEn },
+                        ]).map(({ lang, label, value, set }) => {
+                          const desc = value <= 0.8 ? "Lambat" : value < 0.95 ? "Agak lambat" : value <= 1.05 ? "Normal" : value <= 1.15 ? "Agak cepat" : "Cepat";
+                          return (
+                            <div key={lang} className="flex items-center gap-2.5 bg-white px-3 py-2 rounded-lg border border-gray-200/80">
+                              <span className="text-[9px] font-black text-white bg-[#004175] px-1.5 py-0.5 rounded uppercase shrink-0">
+                                {lang}
+                              </span>
+                              <span className="text-[11px] font-bold text-gray-700 w-16 shrink-0">{label}</span>
+                              <input
+                                type="range"
+                                min={0.7}
+                                max={1.3}
+                                step={0.05}
+                                value={value}
+                                onChange={(e) => set(parseFloat(e.target.value))}
+                                aria-label={`Kecepatan bicara ${label}`}
+                                className="flex-1 min-w-0 accent-[#004175] cursor-pointer h-1.5"
+                              />
+                              <span className="text-[10px] font-mono font-bold text-[#004175] w-24 text-right shrink-0">
+                                {value.toFixed(2)}× <span className="font-sans font-semibold text-gray-400">({desc})</span>
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* 2. KARTU MESIN PENERJEMAH (TRANSLATION ENGINE) */}
+              <div className="bg-white p-6 rounded-[1.5rem] border border-gray-100 shadow-sm space-y-5">
+                <div className="flex items-center gap-3">
+                  <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-[#004175] to-[#002a4d] text-[#F9BB00] flex items-center justify-center shadow-sm shrink-0">
+                    <Languages className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <h3 className="font-black text-[#004175] text-lg uppercase tracking-tight">Mesin Penerjemah (Translation Engine)</h3>
+                    <p className="text-[11px] text-gray-400 font-medium">Pilih mesin untuk fitur Auto-Translate bahasa Indonesia ke Inggris</p>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
                   {[
-                    { value: 'edge', label: 'Edge TTS', desc: 'Neural voices, kualitas terbaik', badge: 'Utama' },
-                    { value: 'gemini', label: 'Gemini Flash', desc: 'Google AI, natural & ekspresif', badge: 'AI' },
-                    { value: 'google', label: 'Google Translate', desc: 'Tanpa API key, sederhana', badge: 'Gratis' },
+                    { value: 'google', label: 'Google Translate', desc: 'Bawaan gratis, cepat, tanpa API Key', badge: 'Gratis / Bawaan' },
+                    { value: 'deepl', label: 'DeepL Translate', desc: 'Akurasi terjemahan sangat natural & kontekstual', badge: 'DeepL API' },
                   ].map(eng => (
                     <button
                       key={eng.value}
-                      onClick={() => setTtsEngine(eng.value)}
+                      onClick={() => setTranslationEngine(eng.value as 'google' | 'deepl')}
                       className={`relative p-4 rounded-xl border-2 transition-all duration-300 text-left ${
-                        ttsEngine === eng.value
+                        translationEngine === eng.value
                           ? 'border-[#004175] bg-[#004175]/5 shadow-md shadow-[#004175]/10'
                           : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50'
                       }`}
                     >
                       <div className="flex items-start justify-between gap-2 mb-1">
-                        <p className={`text-sm font-bold ${ttsEngine === eng.value ? 'text-[#004175]' : 'text-gray-700'}`}>{eng.label}</p>
+                        <p className={`text-sm font-bold ${translationEngine === eng.value ? 'text-[#004175]' : 'text-gray-700'}`}>{eng.label}</p>
                         <span className={`px-2 py-0.5 rounded text-[9px] font-black uppercase tracking-wider ${
-                          ttsEngine === eng.value
+                          translationEngine === eng.value
                             ? 'bg-[#004175] text-white'
                             : 'bg-gray-100 text-gray-500'
                         }`}>{eng.badge}</span>
                       </div>
                       <p className="text-[10px] text-gray-400">{eng.desc}</p>
-                      {ttsEngine === eng.value && (
+                      {translationEngine === eng.value && (
                         <div className="absolute top-2.5 right-2.5 w-2 h-2 rounded-full bg-[#F9BB00] shadow-[0_0_6px_rgba(249,187,0,0.8)]" />
                       )}
                     </button>
                   ))}
                 </div>
 
-                <div className="bg-blue-50/70 border border-blue-100 rounded-xl p-3.5">
-                  <p className="text-[11px] text-[#004175] leading-relaxed">
-                    <span className="font-bold">Catatan:</span> Edge TTS adalah engine utama dengan kualitas paling jernih. Jika gagal karena koneksi, sistem secara otomatis beralih ke Gemini → Google Translate → Windows SAPI secara berurutan.
-                  </p>
-                </div>
+                {translationEngine === 'google' && (
+                  <div className="bg-blue-50/70 border border-blue-100 rounded-xl p-3.5">
+                    <p className="text-[11px] text-[#004175] leading-relaxed">
+                      <span className="font-bold">Info:</span> Google Translate aktif secara langsung tanpa memerlukan API key. Dilengkapi proteksi frasa institusi UGM dan nama ruangan agar tidak salah diterjemahkan.
+                    </p>
+                  </div>
+                )}
 
-                {/* Gemini API Key Form - Hanya jika mode Gemini aktif */}
-                {ttsEngine === 'gemini' && (
-                  <div className="space-y-3 pt-3 border-t border-gray-100 animate-in fade-in slide-in-from-top-2 duration-300">
-                    <div className="flex items-center justify-between">
-                      <p className="text-xs text-gray-400 font-bold uppercase tracking-widest flex items-center gap-1.5">
-                        <Lock className="w-3.5 h-3.5 text-gray-400" /> Gemini API Key
-                      </p>
-                      <span className="text-[10px] text-[#004175] bg-blue-50 px-2.5 py-0.5 rounded-full font-bold">Khusus Mode Gemini</span>
-                    </div>
-
-                    {geminiApiKey.trim() && !isEditingGeminiKey ? (
-                      <div className="space-y-2.5">
-                        <div className="flex items-center justify-between p-3.5 bg-gray-50 border border-gray-200 rounded-xl">
-                          <div className="flex items-center gap-2.5">
-                            <div className="w-8 h-8 rounded-lg bg-[#004175]/10 text-[#004175] flex items-center justify-center shrink-0">
-                              <ShieldCheck className="w-4 h-4" />
-                            </div>
-                            <div>
-                              <p className="text-xs font-bold text-[#004175]">API Key Tersimpan &amp; Terkunci</p>
-                              <p className="text-[11px] font-mono text-gray-400 tracking-wider">
-                                {geminiApiKey.slice(0, 4)}••••••••••••{geminiApiKey.slice(-4)}
-                              </p>
-                            </div>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <button
-                              type="button"
-                              onClick={() => testGeminiKey()}
-                              disabled={testingGeminiKey}
-                              className="px-3 py-1.5 text-xs font-bold bg-[#004175]/10 hover:bg-[#004175]/20 text-[#004175] rounded-lg transition-all flex items-center gap-1.5 disabled:opacity-60"
-                            >
-                              {testingGeminiKey ? (
-                                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                              ) : (
-                                <RefreshCw className="w-3.5 h-3.5" />
-                              )}
-                              Uji Koneksi
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setIsEditingGeminiKey(true);
-                                setShowGeminiKey(false);
-                                setGeminiKeyTestResult(null);
-                              }}
-                              className="px-3.5 py-1.5 text-xs font-bold bg-white border border-gray-200 hover:bg-gray-100 text-[#004175] rounded-lg shadow-sm transition-all"
-                            >
-                              Ganti Key
-                            </button>
-                          </div>
-                        </div>
-
-                        {geminiKeyTestResult && (
-                          <div className={`p-3 rounded-xl border text-xs flex items-start gap-2.5 animate-in fade-in duration-200 ${
-                            geminiKeyTestResult.valid
-                              ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
-                              : 'bg-red-50 border-red-200 text-red-700'
-                          }`}>
-                            {geminiKeyTestResult.valid ? (
-                              <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
-                            ) : (
-                              <AlertTriangle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
-                            )}
-                            <div className="flex-1 leading-relaxed">
-                              <p className="font-bold">{geminiKeyTestResult.valid ? 'Koneksi Berhasil' : 'Koneksi Gagal'}</p>
-                              <p className="text-[11px] mt-0.5">{geminiKeyTestResult.message}</p>
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    ) : (
-                      <div className="space-y-2">
-                        <div className="p-3 bg-blue-50/70 border border-blue-100 rounded-xl text-xs text-[#004175] leading-relaxed">
-                          <p className="font-bold mb-1 flex items-center gap-1.5">
-                            <span className="w-1.5 h-1.5 rounded-full bg-[#004175]" />
-                            Panduan API Key Gemini:
-                          </p>
-                          <p className="text-[11px] text-gray-600">
-                            1. Buka <strong>aistudio.google.com/app/apikey</strong> lalu login akun Google.<br/>
-                            2. Buat API key baru (biasanya berawalan <code className="bg-white px-1 py-0.5 rounded border border-gray-200 font-mono text-[10px]">AIzaSy...</code>).<br/>
-                            3. Tempel di bawah dan klik <strong>Uji</strong> untuk memastikan koneksi aktif.
-                          </p>
-                        </div>
-
-                        <div className="flex items-center gap-2">
-                          <div className="relative flex-1">
-                            <input
-                              type={showGeminiKey ? 'text' : 'password'}
-                              value={geminiApiKey}
-                              onChange={e => {
-                                setGeminiApiKey(e.target.value);
-                                setGeminiKeyTestResult(null);
-                              }}
-                              placeholder="Masukkan API key Gemini (misal: AIzaSy...)..."
-                              autoComplete="off"
-                              spellCheck={false}
-                              className="w-full px-4 py-3 pr-10 rounded-xl bg-gray-50 border-2 border-gray-200 text-[#004175] font-mono text-sm focus:outline-none focus:border-[#004175] focus:ring-4 focus:ring-[#004175]/10 transition-all"
-                            />
-                            <button
-                              type="button"
-                              onClick={toggleShowGeminiKey}
-                              className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-[#004175] transition-colors p-1"
-                              title={showGeminiKey ? 'Sembunyikan' : 'Tampilkan sejenak (4 detik)'}
-                            >
-                              {showGeminiKey ? <EyeOff className="w-4 h-4 text-[#004175]" /> : <Eye className="w-4 h-4" />}
-                            </button>
-                          </div>
-                          {geminiApiKey.trim() && (
-                            <>
-                              <button
-                                type="button"
-                                onClick={() => testGeminiKey(geminiApiKey)}
-                                disabled={testingGeminiKey}
-                                className="px-3.5 py-3 bg-[#004175]/10 hover:bg-[#004175]/20 text-[#004175] text-xs font-bold rounded-xl transition-all shadow-sm shrink-0 flex items-center gap-1.5 disabled:opacity-60"
-                              >
-                                {testingGeminiKey ? (
-                                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                                ) : (
-                                  <RefreshCw className="w-3.5 h-3.5" />
-                                )}
-                                Uji
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setIsEditingGeminiKey(false);
-                                  setShowGeminiKey(false);
-                                }}
-                                className="px-4 py-3 bg-[#004175] text-[#F9BB00] text-xs font-bold rounded-xl hover:bg-[#003159] transition-all shadow-sm shrink-0"
-                              >
-                                Kunci &amp; Selesai
-                              </button>
-                            </>
-                          )}
-                        </div>
-
-                        {geminiKeyTestResult && (
-                          <div className={`p-3 rounded-xl border text-xs flex items-start gap-2.5 animate-in fade-in duration-200 ${
-                            geminiKeyTestResult.valid
-                              ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
-                              : 'bg-red-50 border-red-200 text-red-700'
-                          }`}>
-                            {geminiKeyTestResult.valid ? (
-                              <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
-                            ) : (
-                              <AlertTriangle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
-                            )}
-                            <div className="flex-1 leading-relaxed">
-                              <p className="font-bold">{geminiKeyTestResult.valid ? 'Koneksi Berhasil' : 'Koneksi Gagal'}</p>
-                              <p className="text-[11px] mt-0.5">{geminiKeyTestResult.message}</p>
-                            </div>
-                          </div>
-                        )}
-
-                        <div className="flex items-center justify-between text-[10px] text-gray-400">
-                          <p>
-                            {showGeminiKey
-                              ? '⚠️ Ditampilkan sementara (otomatis disembunyikan dalam 4 detik)'
-                              : '🔒 Nilai disembunyikan demi keamanan privasi'}
-                          </p>
-                          <div className="flex items-center gap-3">
-                            {geminiApiKey.trim() && (
-                              <button
-                                type="button"
-                                onClick={() => setConfirmDeleteKey(true)}
-                                className="text-gray-400 hover:text-red-500 hover:underline transition-colors"
-                              >
-                                Hapus API Key
-                              </button>
-                            )}
-                            {isEditingGeminiKey && geminiApiKey.trim() && (
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setIsEditingGeminiKey(false);
-                                  setShowGeminiKey(false);
-                                }}
-                                className="text-gray-500 hover:text-[#004175] hover:underline"
-                              >
-                                Batal
-                              </button>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                    )}
+                {translationEngine === 'deepl' && (
+                  <div className="bg-emerald-50/70 border border-emerald-100 rounded-xl p-3.5">
+                    <p className="text-[11px] text-emerald-800 leading-relaxed">
+                      <span className="font-bold">DeepL aktif.</span> API key sudah dikonfigurasi oleh administrator sistem. Terjemahan akan menggunakan DeepL dengan akurasi tinggi. Jika kuota habis, sistem otomatis fallback ke Google Translate.
+                    </p>
                   </div>
                 )}
               </div>
@@ -2317,21 +4098,47 @@ export function SettingsPage() {
               </div>
 
               {/* 3. KARTU BELL & JINGLE PENGUMUMAN (GABUNGAN SATU FITUR) */}
-              <div className="bg-white p-6 rounded-[1.5rem] border border-gray-100 shadow-sm space-y-6">
+              <div className="bg-white p-5 sm:p-6 rounded-[1.5rem] border border-gray-100 shadow-sm space-y-6">
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                   <div className="flex items-center gap-3">
                     <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-[#004175] to-[#002a4d] text-[#F9BB00] flex items-center justify-center shadow-sm shrink-0">
                       <Bell className="w-4 h-4" />
                     </div>
                     <div>
-                      <h3 className="font-black text-[#004175] text-lg uppercase tracking-tight">Bell &amp; Jingle Pengumuman</h3>
+                      <h3 className="font-black text-[#004175] text-base sm:text-lg uppercase tracking-tight">Bell &amp; Jingle Pengumuman</h3>
                       <p className="text-[11px] text-gray-400 font-medium">Atur nada pembuka dan penutup pengumuman</p>
                     </div>
                   </div>
-                  <label className="flex w-full sm:w-auto items-center justify-center gap-1.5 px-3.5 py-2 bg-[#004175] text-[#F9BB00] rounded-xl font-bold text-xs cursor-pointer hover:bg-[#003159] shadow-sm transition-colors shrink-0">
-                    <Upload className="w-3.5 h-3.5" /> Upload File Bell
-                    <input type="file" accept="audio/*" className="hidden" onChange={addBellToLibrary} />
-                  </label>
+                  <div className="flex flex-wrap items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={handleExportBells}
+                      disabled={bellLibrary.length === 0}
+                      className="flex items-center gap-1.5 px-3 py-2 bg-gray-100 text-gray-600 rounded-xl font-bold text-xs hover:bg-gray-200 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                      title="Export koleksi file bell kustom ke JSON"
+                    >
+                      <Download className="w-3.5 h-3.5" /> Export
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => bellImportInputRef.current?.click()}
+                      className="flex items-center gap-1.5 px-3 py-2 bg-gray-100 text-gray-600 rounded-xl font-bold text-xs hover:bg-gray-200 transition-colors"
+                      title="Import file bell kustom dari JSON"
+                    >
+                      <Upload className="w-3.5 h-3.5" /> Import
+                    </button>
+                    <input
+                      ref={bellImportInputRef}
+                      type="file"
+                      accept=".json"
+                      className="hidden"
+                      onChange={handleImportBells}
+                    />
+                    <label className="flex flex-1 sm:flex-initial items-center justify-center gap-1.5 px-3.5 py-2 bg-[#004175] text-white rounded-xl font-bold text-xs cursor-pointer hover:bg-[#003159] shadow-sm transition-colors shrink-0">
+                      <Plus className="w-3.5 h-3.5" /> Upload File Bell
+                      <input type="file" accept="audio/*" className="hidden" onChange={addBellToLibrary} />
+                    </label>
+                  </div>
                 </div>
 
                 {/* Dua Kolom: Bell Pembuka & Bell Penutup */}
@@ -2348,9 +4155,17 @@ export function SettingsPage() {
                       </div>
                       <button
                         onClick={() => previewBell(activeBellOpeningId, '/Opening.mp3', `opening:${activeBellOpeningId ?? 'default'}`)}
-                        className="flex items-center gap-1 px-2.5 py-1 bg-[#F9BB00] text-[#004175] rounded-lg text-[10px] font-bold hover:bg-[#e0a800] shadow-sm transition-colors"
+                        className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-[10px] font-bold border shadow-sm transition-colors ${
+                          activePreviewKey === `opening:${activeBellOpeningId ?? 'default'}`
+                            ? 'bg-red-50 text-red-600 border-red-200 hover:bg-red-100'
+                            : 'bg-blue-50 text-[#004175] border-blue-200/70 hover:bg-blue-100'
+                        }`}
                       >
-                        <Bell className="w-3 h-3" /> {activePreviewKey === `opening:${activeBellOpeningId ?? 'default'}` ? 'Stop' : 'Preview'}
+                        {activePreviewKey === `opening:${activeBellOpeningId ?? 'default'}` ? (
+                          <><Square className="w-2.5 h-2.5 fill-red-500 text-red-500" /> Stop</>
+                        ) : (
+                          <><Play className="w-2.5 h-2.5 fill-[#004175] text-[#004175]" /> Preview</>
+                        )}
                       </button>
                     </div>
                     <div className="space-y-1.5 max-h-[160px] overflow-y-auto styled-scrollbar pr-1">
@@ -2381,9 +4196,17 @@ export function SettingsPage() {
                       </div>
                       <button
                         onClick={() => previewBell(activeBellEndingId, '/Ending.mp3', `ending:${activeBellEndingId ?? 'default'}`)}
-                        className="flex items-center gap-1 px-2.5 py-1 bg-[#004175] text-[#F9BB00] rounded-lg text-[10px] font-bold hover:bg-[#003159] shadow-sm transition-colors"
+                        className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-[10px] font-bold border shadow-sm transition-colors ${
+                          activePreviewKey === `ending:${activeBellEndingId ?? 'default'}`
+                            ? 'bg-red-50 text-red-600 border-red-200 hover:bg-red-100'
+                            : 'bg-blue-50 text-[#004175] border-blue-200/70 hover:bg-blue-100'
+                        }`}
                       >
-                        <Bell className="w-3 h-3" /> {activePreviewKey === `ending:${activeBellEndingId ?? 'default'}` ? 'Stop' : 'Preview'}
+                        {activePreviewKey === `ending:${activeBellEndingId ?? 'default'}` ? (
+                          <><Square className="w-2.5 h-2.5 fill-red-500 text-red-500" /> Stop</>
+                        ) : (
+                          <><Play className="w-2.5 h-2.5 fill-[#004175] text-[#004175]" /> Preview</>
+                        )}
                       </button>
                     </div>
                     <div className="space-y-1.5 max-h-[160px] overflow-y-auto styled-scrollbar pr-1">
@@ -2414,9 +4237,17 @@ export function SettingsPage() {
                           <p className="flex-1 min-w-0 text-xs font-medium text-[#004175] truncate font-mono">{bell.name}</p>
                           <button
                             onClick={() => previewBell(bell.id, '/Opening.mp3', `library:${bell.id}`)}
-                            className="px-2 py-0.5 bg-[#F9BB00]/20 text-[#004175] rounded text-[10px] font-bold hover:bg-[#F9BB00]/30 transition-colors"
+                            className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-[10px] font-bold border transition-colors ${
+                              activePreviewKey === `library:${bell.id}`
+                                ? 'bg-red-50 text-red-600 border-red-200 hover:bg-red-100'
+                                : 'bg-blue-50 text-[#004175] border-blue-200/70 hover:bg-blue-100'
+                            }`}
                           >
-                            {activePreviewKey === `library:${bell.id}` ? '■ Stop' : '▶ Tes'}
+                            {activePreviewKey === `library:${bell.id}` ? (
+                              <><Square className="w-2.5 h-2.5 fill-red-500 text-red-500" /> Stop</>
+                            ) : (
+                              <><Play className="w-2.5 h-2.5 fill-[#004175] text-[#004175]" /> Tes</>
+                            )}
                           </button>
                           <button
                             onClick={() => setDeleteBellTarget(bell)}
@@ -2433,22 +4264,50 @@ export function SettingsPage() {
               </div>
 
               {/* 4. KARTU ATURAN PENGUCAPAN (SATU FITUR) */}
-              <div className="bg-white p-6 rounded-[1.5rem] border border-gray-100 shadow-sm space-y-5">
-                <div className="flex items-start justify-between gap-3">
+              <div className="bg-white p-5 sm:p-6 rounded-[1.5rem] border border-gray-100 shadow-sm space-y-5">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                   <div className="flex items-center gap-3">
                     <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-[#004175] to-[#002a4d] text-[#F9BB00] flex items-center justify-center shadow-sm shrink-0">
                       <Languages className="w-4 h-4" />
                     </div>
                     <div>
-                      <h3 className="font-black text-[#004175] text-lg uppercase tracking-tight">Aturan Pengucapan</h3>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <h3 className="font-black text-[#004175] text-base sm:text-lg uppercase tracking-tight">Aturan Pengucapan</h3>
+                        {customSpellingRules.length > 0 && (
+                          <span className="px-2 py-0.5 rounded-full bg-[#004175]/10 text-[#004175] text-[10px] font-black uppercase tracking-widest">
+                            {customSpellingRules.filter(r => r.enabled).length}/{customSpellingRules.length} aktif
+                          </span>
+                        )}
+                      </div>
                       <p className="text-[11px] text-gray-400 font-medium">Ganti kata atau singkatan sebelum naskah dikirim ke suara TTS</p>
                     </div>
                   </div>
-                  {customSpellingRules.length > 0 && (
-                    <span className="shrink-0 mt-1 px-2.5 py-0.5 rounded-full bg-[#004175]/10 text-[#004175] text-[10px] font-black uppercase tracking-widest">
-                      {customSpellingRules.filter(r => r.enabled).length}/{customSpellingRules.length} aktif
-                    </span>
-                  )}
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={handleExportRules}
+                      disabled={customSpellingRules.length === 0}
+                      className="flex items-center gap-1.5 px-3 py-2 bg-gray-100 text-gray-600 rounded-xl font-bold text-xs hover:bg-gray-200 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                      title="Export aturan pengucapan kustom ke JSON"
+                    >
+                      <Download className="w-3.5 h-3.5" /> Export
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => rulesImportInputRef.current?.click()}
+                      className="flex items-center gap-1.5 px-3 py-2 bg-gray-100 text-gray-600 rounded-xl font-bold text-xs hover:bg-gray-200 transition-colors"
+                      title="Import aturan pengucapan dari file JSON"
+                    >
+                      <Upload className="w-3.5 h-3.5" /> Import
+                    </button>
+                    <input
+                      ref={rulesImportInputRef}
+                      type="file"
+                      accept=".json"
+                      className="hidden"
+                      onChange={handleImportRules}
+                    />
+                  </div>
                 </div>
 
                 <div className="bg-blue-50/70 border border-blue-100 rounded-2xl p-4 space-y-1.5">
@@ -2458,9 +4317,9 @@ export function SettingsPage() {
                   </p>
                 </div>
 
-                <div className="border border-gray-200 rounded-xl overflow-x-auto">
+                <div className="border border-gray-200 rounded-xl overflow-hidden">
                   {customSpellingRules.length > 0 && (
-                    <div className="min-w-[620px] flex items-center gap-2 px-4 py-2 bg-gray-50 border-b border-gray-200">
+                    <div className="hidden sm:flex items-center gap-2 px-4 py-2 bg-gray-50 border-b border-gray-200">
                       <div className="w-5 shrink-0" />
                       <p className="flex-[2] text-[10px] font-black text-gray-400 uppercase tracking-widest">Teks Asli</p>
                       <div className="w-4 shrink-0" />
@@ -2471,9 +4330,9 @@ export function SettingsPage() {
                   )}
 
                   {customSpellingRules.length > 0 && (
-                    <div className="min-w-[620px] max-h-[220px] overflow-y-auto styled-scrollbar divide-y divide-gray-100">
+                    <div className="max-h-[240px] overflow-y-auto styled-scrollbar divide-y divide-gray-100">
                       {customSpellingRules.map(rule => (
-                        <div key={rule.id} className={`flex items-center gap-2 px-4 py-2 transition-colors ${rule.enabled ? '' : 'opacity-50'}`}>
+                        <div key={rule.id} className={`flex flex-wrap sm:flex-nowrap items-center gap-2 px-3 sm:px-4 py-2.5 transition-colors ${rule.enabled ? '' : 'opacity-50'}`}>
                           {(() => {
                             const isDefaultRule = rule.id.startsWith('default-');
                             return (
@@ -2490,7 +4349,7 @@ export function SettingsPage() {
                                   onChange={e => updateRule(rule.id, 'from', e.target.value)}
                                   placeholder="teks asli"
                                   disabled={isDefaultRule}
-                                  className="flex-[2] min-w-0 px-2.5 py-1.5 rounded-lg bg-gray-50 border border-gray-200 text-sm text-[#004175] font-mono font-medium focus:outline-none focus:border-[#004175] disabled:bg-gray-100 disabled:text-gray-400"
+                                  className="flex-1 sm:flex-[2] min-w-[110px] px-2.5 py-1.5 rounded-lg bg-gray-50 border border-gray-200 text-xs sm:text-sm text-[#004175] font-mono font-medium focus:outline-none focus:border-[#004175] disabled:bg-gray-100 disabled:text-gray-400"
                                 />
                                 <span className="text-gray-300 text-sm font-bold shrink-0">→</span>
                                 <input
@@ -2498,7 +4357,7 @@ export function SettingsPage() {
                                   onChange={e => updateRule(rule.id, 'to', e.target.value)}
                                   placeholder="dibacakan sebagai"
                                   disabled={isDefaultRule}
-                                  className="flex-[2] min-w-0 px-2.5 py-1.5 rounded-lg bg-gray-50 border border-gray-200 text-sm text-[#004175] font-medium focus:outline-none focus:border-[#004175] disabled:bg-gray-100 disabled:text-gray-400"
+                                  className="flex-1 sm:flex-[2] min-w-[120px] px-2.5 py-1.5 rounded-lg bg-gray-50 border border-gray-200 text-xs sm:text-sm text-[#004175] font-medium focus:outline-none focus:border-[#004175] disabled:bg-gray-100 disabled:text-gray-400"
                                 />
                                 <select
                                   value={rule.lang ?? 'id'}
@@ -2529,15 +4388,15 @@ export function SettingsPage() {
                   )}
 
                   {/* Input Tambah Aturan Baru */}
-                  <div className="min-w-[620px] px-4 py-3 border-t border-gray-200 bg-gray-50/30">
-                    <div className="flex items-center gap-2">
-                      <div className="w-5 shrink-0" />
+                  <div className="px-3 sm:px-4 py-3 border-t border-gray-200 bg-gray-50/30">
+                    <div className="flex flex-wrap sm:flex-nowrap items-center gap-2">
+                      <div className="hidden sm:block w-5 shrink-0" />
                       <input
                         value={newFrom}
                         onChange={e => setNewFrom(e.target.value)}
                         onKeyDown={e => e.key === 'Enter' && addRule()}
                         placeholder='Teks asli, misal: "Dr"'
-                        className="flex-[2] min-w-0 px-2.5 py-1.5 rounded-lg bg-white border border-gray-300 text-sm font-mono focus:outline-none focus:border-[#004175]"
+                        className="flex-1 sm:flex-[2] min-w-[120px] px-2.5 py-1.5 rounded-lg bg-white border border-gray-300 text-xs sm:text-sm font-mono focus:outline-none focus:border-[#004175]"
                       />
                       <span className="text-gray-300 text-sm font-bold shrink-0">→</span>
                       <input
@@ -2545,7 +4404,7 @@ export function SettingsPage() {
                         onChange={e => setNewTo(e.target.value)}
                         onKeyDown={e => e.key === 'Enter' && addRule()}
                         placeholder='Dibaca sebagai, misal: "Dokter"'
-                        className="flex-[2] min-w-0 px-2.5 py-1.5 rounded-lg bg-white border border-gray-300 text-sm focus:outline-none focus:border-[#004175]"
+                        className="flex-1 sm:flex-[2] min-w-[120px] px-2.5 py-1.5 rounded-lg bg-white border border-gray-300 text-xs sm:text-sm focus:outline-none focus:border-[#004175]"
                       />
                       <select
                         value={newLang}
@@ -2561,7 +4420,7 @@ export function SettingsPage() {
                         onClick={addRule}
                         disabled={!newFrom.trim()}
                         title="Tambah aturan"
-                        className="shrink-0 flex items-center gap-1 px-3 py-1.5 bg-[#004175] text-[#F9BB00] rounded-lg text-xs font-bold hover:bg-[#003159] disabled:opacity-40 disabled:cursor-not-allowed transition-colors shadow-sm"
+                        className="shrink-0 flex items-center justify-center gap-1 px-3 py-1.5 bg-[#004175] text-white rounded-lg text-xs font-bold hover:bg-[#003159] disabled:opacity-40 disabled:cursor-not-allowed transition-colors shadow-sm"
                       >
                         <Plus className="w-3 h-3" /> Tambah
                       </button>
@@ -2589,7 +4448,7 @@ export function SettingsPage() {
                             (window as any).electronAPI?.checkForUpdates?.();
                           }}
                           disabled={checkingUpdate}
-                          className="flex items-center gap-1.5 px-3.5 py-2 bg-[#004175] text-[#F9BB00] rounded-xl text-xs font-bold hover:bg-[#003159] disabled:opacity-50 disabled:cursor-not-allowed shadow-sm transition-all"
+                          className="flex items-center gap-1.5 px-3.5 py-2 bg-[#004175] text-white rounded-xl text-xs font-bold hover:bg-[#003159] disabled:opacity-50 disabled:cursor-not-allowed shadow-sm transition-all"
                         >
                           <RefreshCw className={`w-3.5 h-3.5 transition-transform ${checkingUpdate ? 'animate-spin' : ''}`} />
                           {checkingUpdate ? 'Memeriksa...' : 'Periksa Update'}
@@ -2661,21 +4520,6 @@ export function SettingsPage() {
         <RightPanel />
       </div>
 
-      {/* Konfirmasi Hapus API Key */}
-      <ConfirmDialog
-        open={confirmDeleteKey}
-        onOpenChange={setConfirmDeleteKey}
-        onConfirm={() => {
-          setGeminiApiKey("");
-          setIsEditingGeminiKey(false);
-          setShowGeminiKey(false);
-          setConfirmDeleteKey(false);
-          toast({ title: "API Key Dihapus", description: "Konfigurasi Gemini API key telah dihapus dari aplikasi." });
-        }}
-        title="Hapus Gemini API Key"
-        description="Apakah Anda yakin ingin menghapus API key ini? Anda tidak akan dapat menggunakan engine suara Gemini sampai API key baru dimasukkan."
-      />
-
       {/* Konfirmasi Hapus File Bell Kustom */}
       <ConfirmDialog
         open={deleteBellTarget !== null}
@@ -2711,6 +4555,154 @@ export function SettingsPage() {
         title="Hapus Aturan Pengucapan"
         description={`Apakah Anda yakin ingin menghapus aturan pengucapan untuk "${deleteRuleTarget?.from}"?`}
       />
+
+      {/* Modal Konfirmasi Import / Restore Keseluruhan Sistem */}
+      <AnimatePresence>
+        {fullBackupPending && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="absolute inset-0 bg-gray-900/45 backdrop-blur-sm"
+              onClick={() => setFullBackupPending(null)}
+            />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              className="relative w-full max-w-lg bg-white rounded-3xl shadow-2xl overflow-hidden border border-gray-100"
+            >
+              <div className="bg-gradient-to-br from-[#004175] via-[#003866] to-[#002a4d] p-6 text-white relative overflow-hidden">
+                <div className="absolute top-0 right-0 w-32 h-32 bg-[#F9BB00]/10 rounded-full -mr-10 -mt-10 blur-2xl pointer-events-none" />
+                <div className="flex items-start justify-between gap-3 relative z-10">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2.5 bg-white/10 text-[#F9BB00] rounded-xl backdrop-blur-sm">
+                      <FileCheck2 className="w-6 h-6" />
+                    </div>
+                    <div>
+                      <h3 className="font-display text-xl font-bold">Import Keseluruhan Sistem</h3>
+                      <p className="text-white/70 text-xs mt-0.5 truncate max-w-[300px]">
+                        File: {fullBackupPending.fileName}
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setFullBackupPending(null)}
+                    disabled={isRestoringBackup}
+                    title="Tutup dialog"
+                    className="p-1.5 rounded-lg text-white/60 hover:text-white hover:bg-white/10 transition-colors"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+              </div>
+
+              <div className="p-6 space-y-4">
+                <div className="bg-[#004175]/5 border border-[#004175]/15 rounded-2xl p-4 space-y-2.5">
+                  <p className="text-xs font-bold text-[#004175] uppercase tracking-wider">
+                    Rincian Data di Dalam File Backup:
+                  </p>
+                  <div className="grid grid-cols-2 gap-2 text-xs">
+                    <div className="bg-white px-3 py-2 rounded-xl border border-gray-200/80 flex items-center justify-between">
+                      <span className="text-gray-600 font-medium">Pengaturan Suara</span>
+                      <span className="font-bold text-[#004175]">
+                        {fullBackupPending.data.settings ? "Tersedia" : "—"}
+                      </span>
+                    </div>
+                    <div className="bg-white px-3 py-2 rounded-xl border border-gray-200/80 flex items-center justify-between">
+                      <span className="text-gray-600 font-medium">Template Naskah</span>
+                      <span className="font-bold text-[#004175]">
+                        {Array.isArray(fullBackupPending.data.announcements) ? `${fullBackupPending.data.announcements.length} item` : "0"}
+                      </span>
+                    </div>
+                    <div className="bg-white px-3 py-2 rounded-xl border border-gray-200/80 flex items-center justify-between">
+                      <span className="text-gray-600 font-medium">Jadwal Siaran</span>
+                      <span className="font-bold text-[#004175]">
+                        {Array.isArray(fullBackupPending.data.schedules) ? `${fullBackupPending.data.schedules.length} jadwal` : "0"}
+                      </span>
+                    </div>
+                    <div className="bg-white px-3 py-2 rounded-xl border border-gray-200/80 flex items-center justify-between">
+                      <span className="text-gray-600 font-medium">Musik Penutup</span>
+                      <span className="font-bold text-[#004175]">
+                        {Array.isArray(fullBackupPending.data.musicTracks) ? `${fullBackupPending.data.musicTracks.length} lagu` : "0"}
+                      </span>
+                    </div>
+                    <div className="bg-white px-3 py-2 rounded-xl border border-gray-200/80 flex items-center justify-between">
+                      <span className="text-gray-600 font-medium">File Bell Kustom</span>
+                      <span className="font-bold text-[#004175]">
+                        {Array.isArray(fullBackupPending.data.bellLibrary) ? `${fullBackupPending.data.bellLibrary.length} file` : "0"}
+                      </span>
+                    </div>
+                    <div className="bg-white px-3 py-2 rounded-xl border border-gray-200/80 flex items-center justify-between">
+                      <span className="text-gray-600 font-medium">Aturan Ejaan</span>
+                      <span className="font-bold text-[#004175]">
+                        {Array.isArray(fullBackupPending.data.spellingRules) ? `${fullBackupPending.data.spellingRules.length} aturan` : "0"}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                <p className="text-xs font-bold text-gray-500 uppercase tracking-wider">
+                  Pilih metode pemulihan:
+                </p>
+
+                <div className="space-y-2.5">
+                  <button
+                    type="button"
+                    onClick={() => void executeFullBackupRestore("merge")}
+                    disabled={isRestoringBackup}
+                    className="w-full flex items-start gap-3.5 p-3.5 bg-white hover:bg-blue-50/50 border border-gray-200 hover:border-[#004175] text-left rounded-xl transition-all group disabled:opacity-50 shadow-xs hover:shadow-sm"
+                  >
+                    <div className="p-2 bg-[#004175] text-white rounded-lg group-hover:scale-105 transition-transform shrink-0 mt-0.5 shadow-sm">
+                      <RefreshCw className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="font-bold text-sm text-[#004175]">1. Gabungkan &amp; Perbarui Data Serupa</span>
+                        <span className="text-[10px] bg-[#F9BB00] text-[#004175] px-2 py-0.5 rounded-full font-black">Direkomendasikan</span>
+                      </div>
+                      <p className="text-xs text-gray-500 mt-0.5 leading-relaxed">
+                        Terapkan seluruh pengaturan suara, perbarui data yang namanya/waktunya sama, dan tambahkan item baru tanpa menghapus koleksi lama yang tidak ada di file backup.
+                      </p>
+                    </div>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => void executeFullBackupRestore("replace")}
+                    disabled={isRestoringBackup}
+                    className="w-full flex items-start gap-3.5 p-3.5 bg-white hover:bg-red-50/40 border border-gray-200 hover:border-red-300 text-left rounded-xl transition-all group disabled:opacity-50 shadow-xs hover:shadow-sm"
+                  >
+                    <div className="p-2 bg-red-50 text-red-600 group-hover:bg-red-600 group-hover:text-white rounded-lg group-hover:scale-105 transition-all shrink-0 mt-0.5 shadow-sm">
+                      <Upload className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="font-bold text-sm text-gray-800 group-hover:text-red-600 transition-colors">2. Ganti Seluruh Data (Full Restore)</span>
+                        <span className="text-[10px] bg-red-100 text-red-700 px-2 py-0.5 rounded-full font-bold">Timpa Total</span>
+                      </div>
+                      <p className="text-xs text-gray-500 mt-0.5 leading-relaxed">
+                        Hapus data lama yang ada saat ini dan ganti sepenuhnya agar sama persis dengan isi file backup.
+                      </p>
+                    </div>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setFullBackupPending(null)}
+                    disabled={isRestoringBackup}
+                    className="w-full py-2.5 rounded-xl font-bold text-gray-500 hover:text-[#004175] hover:bg-gray-100 border border-gray-200 transition-colors text-xs text-center mt-2"
+                  >
+                    Batalkan Proses Import
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

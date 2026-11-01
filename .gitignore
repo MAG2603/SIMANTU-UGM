@@ -24,6 +24,13 @@ test_suara_gemini.mp3
 fix_main.py
 test_long.js
 test_tts.mp3
+test_time_tts.py
+scratch_audio/
+
+# Local ONNX model weights & Python cache (di-bundle ke extraResources installer, tidak perlu masuk git source)
+services/supertonic3/
+__pycache__/
+*.pyc
 
 # Environment secrets (jika ada)
 .env

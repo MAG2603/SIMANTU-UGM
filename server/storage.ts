@@ -208,14 +208,26 @@ export class JsonFileStorage implements IStorage {
     processMissedSchedules(data);
 
     // Auto-cleanup: remove non-recurring "Done" schedules older than 24 hours
+    // and deduplicate identical active schedules (same announcementId, HH:mm, recurring, daysOfWeek)
     const now = Date.now();
     const TWENTY_FOUR_HOURS = 24 * 60 * 60 * 1000;
     const before = data.schedules.length;
+    const seenKeys = new Set<string>();
     data.schedules = data.schedules.filter((s) => {
       if (s.status === "Done" && !s.recurring) {
         const playTime = new Date(s.playTime).getTime();
-        return (now - playTime) < TWENTY_FOUR_HOURS;
+        if ((now - playTime) >= TWENTY_FOUR_HOURS) return false;
       }
+      const d = new Date(s.playTime);
+      const hhmm = isNaN(d.getTime())
+        ? s.playTime.slice(0, 16)
+        : `${d.getHours().toString().padStart(2, "0")}:${d.getMinutes().toString().padStart(2, "0")}`;
+      const daysKey = JSON.stringify([...(s.daysOfWeek ?? [])].sort());
+      const dedupeKey = `${s.announcementId}|${hhmm}|${Boolean(s.recurring)}|${daysKey}`;
+      if (seenKeys.has(dedupeKey)) {
+        return false;
+      }
+      seenKeys.add(dedupeKey);
       return true;
     });
     if (data.schedules.length < before) {
@@ -234,6 +246,41 @@ export class JsonFileStorage implements IStorage {
   async createSchedule(input: InsertSchedule): Promise<Schedule> {
     const data = loadData();
     const playTime = String(input.playTime);
+
+    // Cegah pembuatan jadwal ganda (double schedule) untuk pengumuman dan jam:menit yang sama
+    const getHHmm = (iso: string) => {
+      const d = new Date(iso);
+      if (isNaN(d.getTime())) return iso.slice(0, 16);
+      return `${d.getHours().toString().padStart(2, "0")}:${d.getMinutes().toString().padStart(2, "0")}`;
+    };
+    const targetHHmm = getHHmm(playTime);
+    const targetDays = JSON.stringify([...(input.daysOfWeek ?? [])].sort());
+    const existingIdx = data.schedules.findIndex((s) => {
+      if (s.status === "Done" && !s.recurring) return false;
+      return (
+        s.announcementId === input.announcementId &&
+        getHHmm(s.playTime) === targetHHmm &&
+        Boolean(s.recurring) === Boolean(input.recurring) &&
+        JSON.stringify([...(s.daysOfWeek ?? [])].sort()) === targetDays
+      );
+    });
+
+    if (existingIdx !== -1) {
+      const current = data.schedules[existingIdx];
+      data.schedules[existingIdx] = {
+        ...current,
+        playTime,
+        status: input.status ?? "Waiting",
+        recurring: input.recurring ?? current.recurring,
+        daysOfWeek: input.daysOfWeek ?? current.daysOfWeek,
+        outroMusicId: input.outroMusicId ?? (input.outroMusicIds && input.outroMusicIds.length > 0 ? input.outroMusicIds[0] : null),
+        outroMusicIds: input.outroMusicIds ?? (input.outroMusicId ? [input.outroMusicId] : []),
+        outroMusicDuration: input.outroMusicDuration ?? current.outroMusicDuration ?? 0,
+      };
+      saveData(data);
+      return data.schedules[existingIdx];
+    }
+
     const schedule: Schedule = {
       id: data.nextScheduleId++,
       announcementId: input.announcementId,

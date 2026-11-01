@@ -362,6 +362,14 @@ function createWindow(url) {
     windowRef.setFullScreen(true);
   });
 
+  // Fallback: pastikan window tampil jika ready-to-show tertunda
+  setTimeout(() => {
+    if (windowRef && !windowRef.isDestroyed() && !windowRef.isVisible()) {
+      windowRef.show();
+      windowRef.setFullScreen(true);
+    }
+  }, 3000);
+
   windowRef.on("close", (e) => {
     if (!isQuitting) {
       e.preventDefault();
@@ -497,7 +505,7 @@ app.whenReady().then(async () => {
   }
 
   if (isDev) {
-    createWindow("http://localhost:5000");
+    createWindow("http://127.0.0.1:5000");
   } else {
     try {
       // Production: set data directory and start embedded server
@@ -523,6 +531,20 @@ app.whenReady().then(async () => {
 
 app.on("window-all-closed", () => {
   if (isQuitting) app.quit();
+});
+
+app.on("will-quit", () => {
+  try {
+    const serverEntry = path.join(__dirname, "..", "dist-electron", "server.cjs");
+    if (fs.existsSync(serverEntry)) {
+      const { stopAllServices } = require(serverEntry);
+      if (typeof stopAllServices === "function") {
+        void stopAllServices();
+      }
+    }
+  } catch (_) {
+    // Ignore cleanup errors on quit
+  }
 });
 
 app.on("activate", () => {
